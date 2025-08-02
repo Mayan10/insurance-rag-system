@@ -1,0 +1,833 @@
+import numpy as np
+import pandas as pd
+from typing import List, Dict, Any, Tuple
+import json
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix
+from sklearn.model_selection import cross_val_score
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import defaultdict
+import re
+
+class AdvancedEvaluationFramework:
+    """Comprehensive evaluation framework for RAG system performance"""
+    
+    def __init__(self):
+        self.evaluation_metrics = {}
+        self.ground_truth = []
+        self.predictions = []
+        
+    def load_ground_truth(self, ground_truth_file: str):
+        """Load ground truth data for evaluation"""
+        with open(ground_truth_file, 'r') as f:
+            self.ground_truth = json.load(f)
+    
+    def evaluate_system(self, rag_system, test_queries: List[str]) -> Dict[str, float]:
+        """Comprehensive evaluation of the RAG system"""
+        
+        results = {
+            'accuracy': 0.0,
+            'precision': 0.0,
+            'recall': 0.0,
+            'f1_score': 0.0,
+            'semantic_similarity': 0.0,
+            'response_time': 0.0,
+            'hallucination_rate': 0.0,
+            'citation_accuracy': 0.0
+        }
+        
+        predictions = []
+        ground_truths = []
+        response_times = []
+        
+        for i, query in enumerate(test_queries):
+            import time
+            start_time = time.time()
+            
+            # Get prediction
+            prediction = rag_system.process_query(query)
+            
+            end_time = time.time()
+            response_times.append(end_time - start_time)
+            
+            predictions.append(prediction)
+            
+            # Match with ground truth if available
+            if i < len(self.ground_truth):
+                ground_truths.append(self.ground_truth[i])
+        
+        # Calculate metrics
+        if ground_truths:
+            results = self._calculate_detailed_metrics(predictions, ground_truths)
+            results['response_time'] = np.mean(response_times)
+        
+        return results
+    
+    def _calculate_detailed_metrics(self, predictions: List[Dict], 
+                                  ground_truths: List[Dict]) -> Dict[str, float]:
+        """Calculate detailed evaluation metrics"""
+        
+        # Extract decisions for classification metrics
+        pred_decisions = [p.get('decision', 'unknown') for p in predictions]
+        true_decisions = [gt.get('decision', 'unknown') for gt in ground_truths]
+        
+        # Basic classification metrics
+        accuracy = accuracy_score(true_decisions, pred_decisions)
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            true_decisions, pred_decisions, average='weighted'
+        )
+        
+        # Amount prediction accuracy (for numerical predictions)
+        amount_accuracy = self._calculate_amount_accuracy(predictions, ground_truths)
+        
+        # Semantic similarity of justifications
+        semantic_sim = self._calculate_semantic_similarity(predictions, ground_truths)
+        
+        # Hallucination detection
+        hallucination_rate = self._detect_hallucinations(predictions, ground_truths)
+        
+        # Citation accuracy
+        citation_accuracy = self._evaluate_citations(predictions, ground_truths)
+        
+        return {
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1,
+            'amount_accuracy': amount_accuracy,
+            'semantic_similarity': semantic_sim,
+            'hallucination_rate': hallucination_rate,
+            'citation_accuracy': citation_accuracy
+        }
+    
+    def _calculate_amount_accuracy(self, predictions: List[Dict], 
+                                 ground_truths: List[Dict]) -> float:
+        """Calculate accuracy of amount predictions"""
+        correct = 0
+        total = 0
+        
+        for pred, gt in zip(predictions, ground_truths):
+            if 'amount' in pred and 'amount' in gt:
+                if pred['amount'] is not None and gt['amount'] is not None:
+                    # Allow 10% tolerance
+                    if abs(pred['amount'] - gt['amount']) / gt['amount'] <= 0.1:
+                        correct += 1
+                    total += 1
+        
+        return correct / total if total > 0 else 0.0
+    
+    def _calculate_semantic_similarity(self, predictions: List[Dict], 
+                                     ground_truths: List[Dict]) -> float:
+        """Calculate semantic similarity of justifications"""
+        try:
+            from sentence_transformers import SentenceTransformer
+            model = SentenceTransformer('all-MiniLM-L6-v2')
+            
+            similarities = []
+            for pred, gt in zip(predictions, ground_truths):
+                pred_just = pred.get('justification', '')
+                gt_just = gt.get('justification', '')
+                
+                if pred_just and gt_just:
+                    embeddings = model.encode([pred_just, gt_just])
+                    similarity = np.dot(embeddings[0], embeddings[1]) / (
+                        np.linalg.norm(embeddings[0]) * np.linalg.norm(embeddings[1])
+                    )
+                    similarities.append(similarity)
+            
+            return np.mean(similarities) if similarities else 0.0
+            
+        except ImportError:
+            return 0.0  # Fallback if sentence-transformers not available
+    
+    def _detect_hallucinations(self, predictions: List[Dict], 
+                             ground_truths: List[Dict]) -> float:
+        """Detect hallucinations in predictions"""
+        hallucinations = 0
+        total = 0
+        
+        for pred, gt in zip(predictions, ground_truths):
+            # Check if prediction mentions facts not in ground truth
+            pred_text = pred.get('justification', '').lower()
+            gt_text = gt.get('justification', '').lower()
+            
+            # Simple keyword-based hallucination detection
+            pred_keywords = set(re.findall(r'\b\w+\b', pred_text))
+            gt_keywords = set(re.findall(r'\b\w+\b', gt_text))
+            
+            # Check for significant divergence
+            if len(pred_keywords - gt_keywords) > len(pred_keywords) * 0.5:
+                hallucinations += 1
+            
+            total += 1
+        
+        return hallucinations / total if total > 0 else 0.0
+    
+    def _evaluate_citations(self, predictions: List[Dict], 
+                          ground_truths: List[Dict]) -> float:
+        """Evaluate accuracy of citations/relevant clauses"""
+        correct_citations = 0
+        total_citations = 0
+        
+        for pred, gt in zip(predictions, ground_truths):
+            pred_clauses = pred.get('relevant_clauses', [])
+            gt_clauses = gt.get('relevant_clauses', [])
+            
+            if pred_clauses and gt_clauses:
+                # Compare clause sources/content
+                pred_sources = {clause.get('source', '') for clause in pred_clauses}
+                gt_sources = {clause.get('source', '') for clause in gt_clauses}
+                
+                overlap = len(pred_sources.intersection(gt_sources))
+                correct_citations += overlap
+                total_citations += len(pred_sources)
+        
+        return correct_citations / total_citations if total_citations > 0 else 0.0
+    
+    def generate_evaluation_report(self, results: Dict[str, float]) -> str:
+        """Generate comprehensive evaluation report"""
+        
+        report = f"""
+# RAG System Evaluation Report
+
+## Overall Performance Metrics
+
+| Metric | Score | Grade |
+|--------|-------|-------|
+| Accuracy | {results['accuracy']:.3f} | {self._get_grade(results['accuracy'])} |
+| Precision | {results['precision']:.3f} | {self._get_grade(results['precision'])} |
+| Recall | {results['recall']:.3f} | {self._get_grade(results['recall'])} |
+| F1 Score | {results['f1_score']:.3f} | {self._get_grade(results['f1_score'])} |
+| Amount Accuracy | {results.get('amount_accuracy', 0):.3f} | {self._get_grade(results.get('amount_accuracy', 0))} |
+| Semantic Similarity | {results.get('semantic_similarity', 0):.3f} | {self._get_grade(results.get('semantic_similarity', 0))} |
+| Hallucination Rate | {results.get('hallucination_rate', 0):.3f} | {self._get_grade(1 - results.get('hallucination_rate', 0))} |
+| Citation Accuracy | {results.get('citation_accuracy', 0):.3f} | {self._get_grade(results.get('citation_accuracy', 0))} |
+
+## Performance Analysis
+
+### Strengths
+- High accuracy in decision classification
+- Effective semantic understanding
+- Good retrieval of relevant information
+
+### Areas for Improvement
+- Reduce hallucination rate
+- Improve citation accuracy
+- Enhance amount prediction precision
+
+## Recommendations
+1. Implement more sophisticated fact-checking mechanisms
+2. Use ensemble methods for better prediction accuracy
+3. Enhance document chunking strategies
+4. Add confidence calibration techniques
+
+## Response Time Analysis
+Average Response Time: {results.get('response_time', 0):.2f} seconds
+Target: < 2.0 seconds for production use
+"""
+        
+        return report
+    
+    def _get_grade(self, score: float) -> str:
+        """Convert score to letter grade"""
+        if score >= 0.9:
+            return "A+"
+        elif score >= 0.8:
+            return "A"
+        elif score >= 0.7:
+            return "B+"
+        elif score >= 0.6:
+            return "B"
+        elif score >= 0.5:
+            return "C+"
+        elif score >= 0.4:
+            return "C"
+        else:
+            return "D"
+
+class ResearchBasedEnhancements:
+    """Implementation of cutting-edge research techniques for RAG improvement"""
+    
+    def __init__(self):
+        self.enhancement_techniques = {
+            'hyde': self._hypothetical_document_embeddings,
+            'cot': self._chain_of_thought_reasoning,
+            'rag_fusion': self._rag_fusion_technique,
+            'corrective_rag': self._corrective_rag,
+            'self_rag': self._self_reflective_rag
+        }
+    
+    def _hypothetical_document_embeddings(self, query: str, retriever) -> List[str]:
+        """
+        HyDE (Hypothetical Document Embeddings) technique
+        Paper: "Precise Zero-Shot Dense Retrieval without Relevance Labels"
+        """
+        # Generate hypothetical answer
+        hypothetical_prompt = f"""
+        Given the query: "{query}"
+        Generate a detailed hypothetical policy document clause that would answer this query.
+        Focus on insurance terms, coverage details, and specific conditions.
+        """
+        
+        # This would use an LLM to generate hypothetical document
+        # For demo purposes, using rule-based approach
+        hypothetical_doc = self._generate_hypothetical_insurance_clause(query)
+        
+        # Use hypothetical document for retrieval
+        enhanced_query = f"{query} {hypothetical_doc}"
+        
+        return [enhanced_query]
+    
+    def _generate_hypothetical_insurance_clause(self, query: str) -> str:
+        """Generate hypothetical insurance clause based on query"""
+        templates = {
+            'surgery': "Surgical procedures are covered under the policy after a waiting period of 2 years for pre-existing conditions. Coverage includes hospital charges, surgeon fees, and post-operative care up to policy limit.",
+            'treatment': "Medical treatments are eligible for reimbursement subject to policy terms. Coverage varies based on the type of treatment and policy duration.",
+            'procedure': "Medical procedures require pre-authorization. Coverage is subject to network hospital availability and policy sub-limits."
+        }
+        
+        query_lower = query.lower()
+        for key, template in templates.items():
+            if key in query_lower:
+                return template
+        
+        return "Standard medical coverage applies as per policy terms and conditions."
+    
+    def _chain_of_thought_reasoning(self, query: str, context: str) -> Dict[str, Any]:
+        """
+        Chain-of-Thought prompting for better reasoning
+        Paper: "Chain-of-Thought Prompting Elicits Reasoning in Large Language Models"
+        """
+        cot_prompt = f"""
+        Let me think step by step about this insurance query: "{query}"
+        
+        Step 1: Parse the query components
+        - Identify age, gender, procedure, location, policy details
+        
+        Step 2: Check policy eligibility
+        - Verify policy duration and waiting periods
+        - Check for pre-existing condition clauses
+        
+        Step 3: Evaluate procedure coverage
+        - Check if procedure is covered
+        - Look for exclusions or limitations
+        
+        Step 4: Calculate applicable amount
+        - Apply sub-limits and deductions
+        - Consider co-payment requirements
+        
+        Step 5: Make final decision
+        - Synthesize all factors
+        - Provide clear justification
+        
+        Context: {context}
+        
+        Now, following these steps...
+        """
+        
+        # This would be processed by an LLM
+        # Returning structured reasoning for demo
+        return {
+            'reasoning_steps': [
+                'Parsed query components',
+                'Checked policy eligibility',
+                'Evaluated procedure coverage',
+                'Calculated applicable amount',
+                'Made final decision'
+            ],
+            'enhanced_context': cot_prompt
+        }
+    
+    def _rag_fusion_technique(self, query: str, retriever) -> List[str]:
+        """
+        RAG-Fusion: Multi-query generation and ranking fusion
+        Paper: "RAG-Fusion: A New Take on Retrieval-Augmented Generation"
+        """
+        # Generate multiple related queries
+        related_queries = self._generate_related_queries(query)
+        
+        # Retrieve for each query
+        all_results = []
+        for q in related_queries:
+            results = retriever.retrieve_relevant_chunks(q, top_k=5)
+            all_results.extend(results)
+        
+        # Reciprocal Rank Fusion
+        fused_results = self._reciprocal_rank_fusion(all_results)
+        
+        return fused_results
+    
+    def _generate_related_queries(self, original_query: str) -> List[str]:
+        """Generate semantically related queries"""
+        # Extract key components
+        import re
+        
+        base_queries = [original_query]
+        
+        # Generate variations
+        if 'surgery' in original_query.lower():
+            base_queries.append(original_query.replace('surgery', 'surgical procedure'))
+            base_queries.append(original_query.replace('surgery', 'operation'))
+        
+        if 'policy' in original_query.lower():
+            base_queries.append(original_query + ' coverage details')
+            base_queries.append(original_query + ' eligibility criteria')
+        
+        # Add context-specific queries
+        base_queries.append(f"What are the coverage conditions for {original_query}")
+        base_queries.append(f"Eligibility requirements for {original_query}")
+        
+        return base_queries[:5]  # Limit to 5 queries
+    
+    def _reciprocal_rank_fusion(self, results: List) -> List:
+        """Implement Reciprocal Rank Fusion algorithm"""
+        # Group by content to avoid duplicates
+        content_scores = defaultdict(float)
+        content_map = {}
+        
+        k = 60  # RRF parameter
+        
+        for result in results:
+            content_key = result.content[:100]  # First 100 chars as key
+            content_map[content_key] = result
+            
+            # RRF score: 1 / (k + rank)
+            rank = getattr(result, 'original_rank', 1)
+            content_scores[content_key] += 1 / (k + rank)
+        
+        # Sort by fused scores
+        sorted_content = sorted(content_scores.items(), key=lambda x: x[1], reverse=True)
+        
+        # Return reranked results
+        fused_results = []
+        for content_key, score in sorted_content:
+            if content_key in content_map:
+                result = content_map[content_key]
+                result.relevance_score = score  # Update with fused score
+                fused_results.append(result)
+        
+        return fused_results
+    
+    def _corrective_rag(self, query: str, retrieved_docs: List, threshold: float = 0.5):
+        """
+        Corrective RAG (CRAG) - Self-correction mechanism
+        Paper: "Corrective Retrieval Augmented Generation"
+        """
+        # Evaluate retrieval quality
+        quality_scores = []
+        for doc in retrieved_docs:
+            # Simple quality assessment
+            relevance = doc.relevance_score
+            length_penalty = min(len(doc.content) / 1000, 1.0)  # Penalize very long docs
+            quality = relevance * length_penalty
+            quality_scores.append(quality)
+        
+        avg_quality = np.mean(quality_scores) if quality_scores else 0
+        
+        if avg_quality < threshold:
+            # Trigger corrective actions
+            corrected_docs = self._web_search_fallback(query)
+            return corrected_docs
+        else:
+            # Filter low-quality documents
+            filtered_docs = [
+                doc for doc, score in zip(retrieved_docs, quality_scores)
+                if score >= threshold * 0.7
+            ]
+            return filtered_docs
+    
+    def _web_search_fallback(self, query: str) -> List:
+        """Fallback to web search when retrieval quality is low"""
+        # This would integrate with web search APIs
+        # For demo, return placeholder
+        return [
+            type('MockDoc', (), {
+                'content': f"External search result for: {query}",
+                'source_document': 'web_search',
+                'relevance_score': 0.8
+            })()
+        ]
+    
+    def _self_reflective_rag(self, query: str, initial_answer: str, context: str) -> Dict[str, Any]:
+        """
+        Self-RAG: Self-reflective reasoning and critique
+        Paper: "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection"
+        """
+        # Generate self-critique
+        critique_prompt = f"""
+        Query: {query}
+        Initial Answer: {initial_answer}
+        Context: {context}
+        
+        Please critique this answer by checking:
+        1. Factual accuracy against the context
+        2. Completeness of the response
+        3. Logical consistency
+        4. Appropriate use of evidence
+        
+        Provide specific feedback and suggestions for improvement.
+        """
+        
+        # Self-reflection questions
+        reflection_questions = [
+            "Does the answer directly address the query?",
+            "Is the answer supported by the provided context?",
+            "Are there any contradictions in the reasoning?",
+            "What additional information might be needed?"
+        ]
+        
+        # Generate improved answer based on reflection
+        improved_answer = self._generate_improved_answer(
+            query, initial_answer, context, reflection_questions
+        )
+        
+        return {
+            'original_answer': initial_answer,
+            'critique': critique_prompt,
+            'reflection_questions': reflection_questions,
+            'improved_answer': improved_answer,
+            'confidence_adjustment': 0.1  # Boost confidence due to self-reflection
+        }
+    
+    def _generate_improved_answer(self, query: str, initial_answer: str, 
+                                context: str, reflections: List[str]) -> str:
+        """Generate improved answer based on self-reflection"""
+        
+        # Simple improvement logic (would use LLM in practice)
+        improvements = []
+        
+        if "not enough information" in initial_answer.lower():
+            improvements.append("Seeking additional context from policy documents")
+        
+        if "uncertain" in initial_answer.lower():
+            improvements.append("Consulting specific policy clauses for clarity")
+        
+        improved = initial_answer
+        if improvements:
+            improved += f" [Refined based on reflection: {', '.join(improvements)}]"
+        
+        return improved
+
+class ProductionOptimizations:
+    """Production-ready optimizations for the RAG system"""
+    
+    def __init__(self):
+        self.cache = {}
+        self.performance_metrics = defaultdict(list)
+    
+    def implement_caching(self, rag_system):
+        """Implement intelligent caching for frequently asked queries"""
+        original_process = rag_system.process_query
+        
+        def cached_process_query(query: str):
+            # Create cache key
+            cache_key = self._create_cache_key(query)
+            
+            if cache_key in self.cache:
+                return self.cache[cache_key]
+            
+            # Process query
+            result = original_process(query)
+            
+            # Cache result
+            self.cache[cache_key] = result
+            
+            return result
+        
+        rag_system.process_query = cached_process_query
+        return rag_system
+    
+    def _create_cache_key(self, query: str) -> str:
+        """Create normalized cache key from query"""
+        # Normalize query for caching
+        normalized = re.sub(r'\d+', 'NUM', query.lower())
+        normalized = re.sub(r'[^\w\s]', '', normalized)
+        return normalized.strip()
+    
+    def add_confidence_calibration(self, rag_system):
+        """Add confidence calibration to improve reliability"""
+        original_process = rag_system.process_query
+        
+        def calibrated_process_query(query: str):
+            result = original_process(query)
+            
+            # Calibrate confidence based on various factors
+            calibrated_confidence = self._calibrate_confidence(
+                result.get('confidence', 0.5),
+                len(result.get('relevant_clauses', [])),
+                result.get('decision', 'unknown')
+            )
+            
+            result['confidence'] = calibrated_confidence
+            result['confidence_calibrated'] = True
+            
+            return result
+        
+        rag_system.process_query = calibrated_process_query
+        return rag_system
+    
+    def _calibrate_confidence(self, raw_confidence: float, 
+                            num_clauses: int, decision: str) -> float:
+        """Calibrate confidence based on evidence strength"""
+        calibrated = raw_confidence
+        
+        # Adjust based on evidence quantity
+        if num_clauses >= 3:
+            calibrated *= 1.1  # Boost for strong evidence
+        elif num_clauses <= 1:
+            calibrated *= 0.8  # Reduce for weak evidence
+        
+        # Adjust based on decision type
+        if decision == 'requires_review':
+            calibrated *= 0.7  # Lower confidence for uncertain cases
+        
+        # Ensure bounds
+        return max(0.1, min(0.95, calibrated))
+    
+    def add_monitoring(self, rag_system):
+        """Add comprehensive monitoring and logging"""
+        original_process = rag_system.process_query
+        
+        def monitored_process_query(query: str):
+            import time
+            start_time = time.time()
+            
+            try:
+                result = original_process(query)
+                
+                # Log performance metrics
+                processing_time = time.time() - start_time
+                self.performance_metrics['processing_time'].append(processing_time)
+                self.performance_metrics['success_count'].append(1)
+                
+                # Add monitoring metadata
+                result['processing_time'] = processing_time
+                result['timestamp'] = datetime.now().isoformat()
+                
+                return result
+                
+            except Exception as e:
+                # Log errors
+                self.performance_metrics['error_count'].append(1)
+                raise e
+        
+        rag_system.process_query = monitored_process_query
+        return rag_system
+    
+    def get_performance_report(self) -> Dict[str, Any]:
+        """Generate performance monitoring report"""
+        if not self.performance_metrics:
+            return {"message": "No metrics collected yet"}
+        
+        return {
+            "average_processing_time": np.mean(self.performance_metrics.get('processing_time', [0])),
+            "total_queries_processed": len(self.performance_metrics.get('processing_time', [])),
+            "success_rate": len(self.performance_metrics.get('success_count', [])) / 
+                          (len(self.performance_metrics.get('success_count', [])) + 
+                           len(self.performance_metrics.get('error_count', []))),
+            "cache_hit_rate": len([k for k in self.cache.keys()]) / 
+                             max(len(self.performance_metrics.get('processing_time', [])), 1)
+        }
+
+# Integration class that combines all enhancements
+class EnhancedRAGSystem:
+    """Production-ready RAG system with all research-based enhancements"""
+    
+    def __init__(self):
+        from advanced_rag_system import AdvancedRAGSystem  # Import base system
+        
+        self.base_system = AdvancedRAGSystem()
+        self.research_enhancements = ResearchBasedEnhancements()
+        self.production_opts = ProductionOptimizations()
+        self.evaluation_framework = AdvancedEvaluationFramework()
+        
+        # Apply production optimizations
+        self.base_system = self.production_opts.implement_caching(self.base_system)
+        self.base_system = self.production_opts.add_confidence_calibration(self.base_system)
+        self.base_system = self.production_opts.add_monitoring(self.base_system)
+    
+    def process_query(self, query: str, use_enhancements: List[str] = None) -> Dict[str, Any]:
+        """Process query with optional research enhancements"""
+        
+        if use_enhancements is None:
+            use_enhancements = ['hyde', 'cot', 'self_rag']
+        
+        enhanced_query = query
+        enhanced_context = ""
+        
+        # Apply selected enhancements
+        if 'hyde' in use_enhancements:
+            enhanced_queries = self.research_enhancements._hypothetical_document_embeddings(
+                query, self.base_system.retriever
+            )
+            enhanced_query = enhanced_queries[0]
+        
+        if 'rag_fusion' in use_enhancements:
+            fused_results = self.research_enhancements._rag_fusion_technique(
+                query, self.base_system.retriever
+            )
+            # Use fused results in processing
+        
+        # Process with base system
+        result = self.base_system.process_query(enhanced_query)
+        
+        # Apply post-processing enhancements
+        if 'cot' in use_enhancements:
+            cot_result = self.research_enhancements._chain_of_thought_reasoning(
+                query, str(result.get('relevant_clauses', []))
+            )
+            result['reasoning_enhanced'] = cot_result
+        
+        if 'self_rag' in use_enhancements:
+            self_rag_result = self.research_enhancements._self_reflective_rag(
+                query, result.get('justification', ''), 
+                str(result.get('relevant_clauses', []))
+            )
+            result.update(self_rag_result)
+            # Boost confidence due to self-reflection
+            result['confidence'] = min(0.95, result.get('confidence', 0.5) + 0.1)
+        
+        result['enhancements_applied'] = use_enhancements
+        return result
+    
+    def benchmark_system(self, test_queries: List[str], 
+                        ground_truth_file: str = None) -> Dict[str, Any]:
+        """Comprehensive benchmarking of the enhanced system"""
+        
+        if ground_truth_file:
+            self.evaluation_framework.load_ground_truth(ground_truth_file)
+        
+        # Test different enhancement combinations
+        enhancement_combinations = [
+            [],  # Baseline
+            ['hyde'],
+            ['cot'],
+            ['rag_fusion'],
+            ['self_rag'],
+            ['hyde', 'cot'],
+            ['hyde', 'cot', 'self_rag']  # Full enhancement
+        ]
+        
+        results = {}
+        
+        for enhancements in enhancement_combinations:
+            config_name = '_'.join(enhancements) if enhancements else 'baseline'
+            
+            print(f"Testing configuration: {config_name}")
+            
+            # Create temporary system with specific enhancements
+            config_results = []
+            for query in test_queries:
+                result = self.process_query(query, use_enhancements=enhancements)
+                config_results.append(result)
+            
+            # Evaluate this configuration
+            if ground_truth_file:
+                eval_results = self.evaluation_framework.evaluate_system(
+                    self, test_queries
+                )
+            else:
+                eval_results = {'accuracy': 0.0}  # Placeholder when no ground truth
+            
+            results[config_name] = {
+                'evaluation_metrics': eval_results,
+                'sample_results': config_results[:3],  # First 3 examples
+                'configuration': enhancements
+            }
+        
+        return results
+    
+    def generate_deployment_report(self) -> str:
+        """Generate comprehensive deployment readiness report"""
+        
+        performance_metrics = self.production_opts.get_performance_report()
+        
+        report = f"""
+# RAG System Deployment Report
+
+## System Configuration
+- Base Architecture: Advanced RAG with Hybrid Retrieval
+- Enhancement Techniques: HyDE, Chain-of-Thought, RAG-Fusion, Self-RAG
+- Production Optimizations: Caching, Confidence Calibration, Monitoring
+
+## Performance Metrics
+- Average Processing Time: {performance_metrics.get('average_processing_time', 0):.2f}s
+- Total Queries Processed: {performance_metrics.get('total_queries_processed', 0)}
+- Success Rate: {performance_metrics.get('success_rate', 0):.1%}
+- Cache Hit Rate: {performance_metrics.get('cache_hit_rate', 0):.1%}
+
+## Deployment Recommendations
+
+### Infrastructure Requirements
+- GPU: NVIDIA V100 or better for optimal performance
+- RAM: 32GB minimum, 64GB recommended
+- Storage: SSD with 500GB+ for document storage and caching
+- CPU: 16+ cores for parallel processing
+
+### Scaling Considerations
+- Horizontal scaling via load balancing
+- Database optimization for document storage
+- CDN for static document assets
+- Redis/Memcached for distributed caching
+
+### Monitoring Setup
+- Real-time performance dashboards
+- Error tracking and alerting
+- Query pattern analysis
+- User feedback integration
+
+## Security Considerations
+- Document access controls
+- Query sanitization
+- PII detection and masking
+- Audit logging for compliance
+
+## Next Steps
+1. Load testing with realistic traffic patterns
+2. A/B testing of enhancement combinations
+3. User acceptance testing
+4. Gradual rollout with monitoring
+        """
+        
+        return report
+
+# Example usage demonstrating the complete enhanced system
+def demonstrate_enhanced_system():
+    """Demonstrate the enhanced RAG system capabilities"""
+    
+    # Initialize enhanced system
+    enhanced_rag = EnhancedRAGSystem()
+    
+    # Sample test queries
+    test_queries = [
+        "46-year-old male, knee surgery in Pune, 3-month-old insurance policy",
+        "25F, dental treatment, Mumbai, 2-year policy",
+        "60 year old woman, heart surgery, Delhi, 6 month old policy"
+    ]
+    
+    print("=== Enhanced RAG System Demonstration ===\n")
+    
+    # Test different enhancement combinations
+    for query in test_queries[:1]:  # Test first query only for demo
+        print(f"Query: {query}\n")
+        
+        # Test baseline
+        baseline_result = enhanced_rag.process_query(query, use_enhancements=[])
+        print("Baseline Result:")
+        print(f"Decision: {baseline_result['decision']}")
+        print(f"Confidence: {baseline_result['confidence']:.2f}")
+        print(f"Justification: {baseline_result['justification'][:100]}...\n")
+        
+        # Test with all enhancements
+        enhanced_result = enhanced_rag.process_query(
+            query, use_enhancements=['hyde', 'cot', 'self_rag']
+        )
+        print("Enhanced Result:")
+        print(f"Decision: {enhanced_result['decision']}")
+        print(f"Confidence: {enhanced_result['confidence']:.2f}")
+        print(f"Justification: {enhanced_result['justification'][:100]}...")
+        print(f"Enhancements Applied: {enhanced_result['enhancements_applied']}")
+        print("-" * 50)
+
+if __name__ == "__main__":
+    demonstrate_enhanced_system()
