@@ -1,6 +1,37 @@
-# Enhanced RAG System for Insurance Policy Processing
+# Insurance RAG System - Hackathon Submission
 
-This is an improved version of the RAG (Retrieval-Augmented Generation) system specifically designed for processing insurance policy queries and making coverage decisions.
+A sophisticated Retrieval-Augmented Generation (RAG) system designed for insurance policy analysis and question answering. This project is submitted for the HackRx hackathon.
+
+## 🚀 Live API Endpoint
+
+**Base URL:** `https://your-deployed-url.com`
+
+**Main Endpoint:** `POST /hackrx/run`
+
+**Authentication:** `Authorization: Bearer hackrx-2024-secret-key`
+
+## 🏆 Hackathon Features
+
+✅ **Required API Structure Implemented**
+- POST `/hackrx/run` endpoint with proper authentication
+- Handles document URLs and question arrays
+- Returns structured JSON responses
+
+✅ **Advanced RAG Technology**
+- Multi-model embedding system for robust document retrieval
+- Semantic search with keyword matching
+- Intelligent document processing (PDF, Word, text)
+
+✅ **Production Ready**
+- FastAPI backend with proper error handling
+- HTTPS support and security measures
+- Response time optimization (< 30 seconds)
+- Comprehensive logging and monitoring
+
+✅ **Insurance Domain Expertise**
+- Specialized query parsing for insurance terminology
+- Policy rule engine with age limits and waiting periods
+- Coverage decision logic with confidence scoring
 
 ## Key Improvements
 
@@ -64,7 +95,9 @@ This is an improved version of the RAG (Retrieval-Augmented Generation) system s
 "No, knee surgery is not covered under the policy. Policy is only 3 months old and may have waiting period restrictions."
 ```
 
-## Installation
+## 🚀 Quick Start
+
+### Local Development
 
 1. Install dependencies:
 ```bash
@@ -76,9 +109,53 @@ pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 ```
 
-3. Run the setup script:
+3. Set environment variable:
 ```bash
-python setup.py
+export API_KEY=hackrx-2024-secret-key
+```
+
+4. Run the API:
+```bash
+python app.py
+```
+
+### API Usage
+
+**Endpoint:** `POST /hackrx/run`
+
+**Headers:**
+```
+Authorization: Bearer hackrx-2024-secret-key
+Content-Type: application/json
+Accept: application/json
+```
+
+**Request Body:**
+```json
+{
+    "documents": "https://hackrx.blob.core.windows.net/assets/policy.pdf?sv=2023-01-03&st=2025-07-04T09%3A11%3A24Z&se=2027-07-05T09%3A11%3A00Z&sr=b&sp=r&sig=N4a9OU0w0QXO6AOIBiu4bpl7AXvEZogeT%2FjUHNO7HzQ%3D",
+    "questions": [
+        "What is the grace period for premium payment under the National Parivar Mediclaim Plus Policy?",
+        "What is the waiting period for pre-existing diseases (PED) to be covered?"
+    ]
+}
+```
+
+**Response:**
+```json
+{
+    "answers": [
+        "A grace period of thirty days is provided for premium payment after the due date to renew or continue the policy without losing continuity benefits.",
+        "There is a waiting period of thirty-six (36) months of continuous coverage from the first policy inception for pre-existing diseases and their direct complications to be covered."
+    ]
+}
+```
+
+### Testing
+
+Run the test script to validate the API:
+```bash
+python test_api.py
 ```
 
 ## Testing
