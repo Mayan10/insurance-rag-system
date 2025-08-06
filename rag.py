@@ -26,6 +26,7 @@ DocxDocument = None
 email = None
 policy = None
 fitz = None
+transformers = None
 
 try:
     import torch
@@ -41,6 +42,7 @@ try:
     import email
     from email import policy
     import fitz  # PyMuPDF for better PDF processing
+    import transformers
 except ImportError as e:
     print(f"Missing dependencies. Install with: pip install {e.name}")
     print("Some features may not work without these dependencies.")
@@ -594,14 +596,29 @@ class MultiModelEmbeddingRetriever:
         return final_results[:top_k]
 
 class AdvancedLLMDecisionEngine:
-    """Advanced decision engine using enhanced reasoning and context analysis"""
+    """Advanced decision engine using LLM for question answering"""
     
-    def __init__(self, model_name: str = "microsoft/DialoGPT-medium"):
+    def __init__(self, model_name: str = "deepset/roberta-base-squad2"):
         self.model_name = model_name
-        # Initialize your preferred LLM here
-        # This is a placeholder - replace with actual LLM initialization
+        self.qa_pipeline = None
+        self.llm_available = False
         
-        # Enhanced policy rules and decision logic
+        # Initialize LLM question answering pipeline
+        if pipeline is not None:
+            try:
+                logger.info(f"Loading LLM QA model: {model_name}")
+                self.qa_pipeline = pipeline(
+                    "question-answering",
+                    model=model_name,
+                    tokenizer=model_name
+                )
+                self.llm_available = True
+                logger.info("LLM QA model loaded successfully")
+            except Exception as e:
+                logger.warning(f"Failed to load LLM QA model: {e}")
+                self.llm_available = False
+        
+        # Enhanced policy rules and decision logic (fallback)
         self.policy_rules = {
             'age_limits': {
                 'knee_surgery': {'min': 18, 'max': 65},
@@ -625,7 +642,7 @@ class AdvancedLLMDecisionEngine:
         
     def make_decision(self, query: QueryStructured, 
                      relevant_clauses: List[RetrievedClause]) -> DecisionResponse:
-        """Make decision using advanced reasoning with enhanced context analysis"""
+        """Make decision using LLM-based question answering"""
         
         # Create enhanced context from relevant clauses
         context = self._create_enhanced_context(relevant_clauses)
@@ -633,13 +650,40 @@ class AdvancedLLMDecisionEngine:
         # Generate detailed reasoning chain
         reasoning_chain = self._generate_detailed_reasoning_chain(query, context)
         
-        # Make final decision with enhanced analysis
-        decision = self._evaluate_decision_enhanced(query, context, reasoning_chain)
+        # Use LLM for question answering if available
+        if self.llm_available and self.qa_pipeline:
+            decision = self._answer_with_llm(query, context, relevant_clauses)
+        else:
+            # Fallback to rule-based decision
+            decision = self._evaluate_decision_enhanced(query, context, reasoning_chain)
         
         # Add relevant clauses to decision
         decision.relevant_clauses = relevant_clauses[:5]  # Top 5 most relevant clauses
         
         return decision
+    
+    def answer_question_with_llm(self, question: str, context: str) -> str:
+        """Answer a question using LLM based on the provided context"""
+        if not self.llm_available or not self.qa_pipeline:
+            return "LLM not available for question answering."
+        
+        try:
+            # Use the QA pipeline to answer the question
+            result = self.qa_pipeline(
+                question=question,
+                context=context,
+                max_answer_len=200,
+                handle_impossible_answer=True
+            )
+            
+            if result['score'] > 0.3:  # Confidence threshold
+                return result['answer']
+            else:
+                return "The answer to this question is not clearly stated in the provided policy document."
+                
+        except Exception as e:
+            logger.error(f"Error in LLM question answering: {e}")
+            return f"Error processing question: {str(e)}"
     
     def _create_enhanced_context(self, clauses: List[RetrievedClause]) -> str:
         """Create enhanced structured context from retrieved clauses"""
@@ -962,6 +1006,41 @@ class AdvancedLLMDecisionEngine:
                 pass
         
         return analysis
+    
+    def _answer_with_llm(self, query: QueryStructured, context: str, relevant_clauses: List[RetrievedClause]) -> DecisionResponse:
+        """Answer questions using LLM based on retrieved context"""
+        
+        # Convert structured query back to natural language question
+        question = query.raw_query if query.raw_query else "What is the coverage for this procedure?"
+        
+        # Use LLM to answer the question
+        llm_answer = self.answer_question_with_llm(question, context)
+        
+        # Determine decision based on LLM answer
+        answer_lower = llm_answer.lower()
+        
+        if any(word in answer_lower for word in ['yes', 'covered', 'eligible', 'approved']):
+            decision = "approved"
+            confidence = 0.8
+        elif any(word in answer_lower for word in ['no', 'not covered', 'excluded', 'not eligible']):
+            decision = "rejected"
+            confidence = 0.8
+        else:
+            decision = "requires_review"
+            confidence = 0.6
+        
+        # Extract amount if mentioned
+        amount = self._extract_coverage_amount(context)
+        
+        return DecisionResponse(
+            decision=decision,
+            amount=amount,
+            confidence=confidence,
+            justification=llm_answer,
+            relevant_clauses=relevant_clauses,
+            reasoning_chain=[f"LLM analysis: {llm_answer}"],
+            coverage_details={"llm_answer": llm_answer}
+        )
     
     def _extract_coverage_amount(self, context: str) -> Optional[float]:
         """Extract coverage amount from context with enhanced patterns"""
