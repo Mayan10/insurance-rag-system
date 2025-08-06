@@ -670,7 +670,7 @@ class AdvancedLLMDecisionEngine:
         self.qa_pipeline = None
         
         # Initialize multiple LLM components for different tasks
-        if AutoTokenizer is not None and AutoModel is not None:
+        if AutoTokenizer is not None and AutoModel is not None and pipeline is not None:
             try:
                 logger.info(f"Loading powerful LLM model: {model_name}")
                 
@@ -679,6 +679,7 @@ class AdvancedLLMDecisionEngine:
                 self.model = AutoModel.from_pretrained(model_name)
                 
                 # Load a more sophisticated QA model
+                logger.info("Loading QA pipeline...")
                 self.qa_pipeline = pipeline(
                     "question-answering",
                     model="deepset/roberta-large-squad2",  # More powerful QA model
@@ -687,9 +688,20 @@ class AdvancedLLMDecisionEngine:
                 
                 self.llm_available = True
                 logger.info("Powerful LLM models loaded successfully")
+                
+                # Test the LLM with a simple question
+                try:
+                    test_answer = self.answer_question_with_llm("What is a grace period?", "A grace period is a time period after the due date during which payment can be made.")
+                    logger.info(f"LLM test successful: {test_answer[:50]}...")
+                except Exception as e:
+                    logger.warning(f"LLM test failed: {e}")
+                    self.llm_available = False
             except Exception as e:
                 logger.warning(f"Failed to load LLM models: {e}")
                 self.llm_available = False
+        else:
+            logger.warning("Required LLM libraries not available")
+            self.llm_available = False
         
         # Enhanced policy rules and decision logic (fallback)
         self.policy_rules = {
@@ -720,14 +732,20 @@ class AdvancedLLMDecisionEngine:
         # Create enhanced context from relevant clauses
         context = self._create_enhanced_context(relevant_clauses)
         
-        # Generate detailed reasoning chain
-        reasoning_chain = self._generate_detailed_reasoning_chain(query, context)
-        
-        # Use LLM for question answering if available
-        if self.llm_available and self.qa_pipeline:
-            decision = self._answer_with_llm(query, context, relevant_clauses)
-        else:
+        # Always try LLM first, regardless of availability
+        try:
+            if self.llm_available:
+                logger.info("Using LLM-based question answering")
+                decision = self._answer_with_llm(query, context, relevant_clauses)
+            else:
+                logger.warning("LLM not available, using fallback method")
+                # Fallback to rule-based decision
+                reasoning_chain = self._generate_detailed_reasoning_chain(query, context)
+                decision = self._evaluate_decision_enhanced(query, context, reasoning_chain)
+        except Exception as e:
+            logger.error(f"Error in LLM decision making: {e}")
             # Fallback to rule-based decision
+            reasoning_chain = self._generate_detailed_reasoning_chain(query, context)
             decision = self._evaluate_decision_enhanced(query, context, reasoning_chain)
         
         # Add relevant clauses to decision
@@ -1177,8 +1195,13 @@ Answer:"""
         # Convert structured query back to natural language question
         question = query.raw_query if query.raw_query else "What is the coverage for this procedure?"
         
+        logger.info(f"LLM Question: {question}")
+        logger.info(f"LLM Context length: {len(context)} characters")
+        
         # Use LLM to answer the question
         llm_answer = self.answer_question_with_llm(question, context)
+        
+        logger.info(f"LLM Answer: {llm_answer}")
         
         # Determine decision based on LLM answer
         answer_lower = llm_answer.lower()
