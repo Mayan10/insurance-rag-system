@@ -10,7 +10,7 @@ import time
 import sys
 
 # Configuration - REPLACE WITH YOUR ACTUAL NGROK URL
-NGROK_URL = "https://your-ngrok-url.ngrok.io"  # Replace this!
+NGROK_URL = "https://403f4b11a4d9.ngrok-free.app"  # Your actual ngrok URL
 API_KEY = "hackrx-2024-secret-key"
 
 def test_ngrok_connection():
