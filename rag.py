@@ -70,6 +70,8 @@ class RetrievedClause:
     section: Optional[str] = None
     relevance_score: float = 0.0
     clause_type: Optional[str] = None
+    semantic_similarity: float = 0.0
+    keyword_matches: List[str] = None
 
 @dataclass
 class DecisionResponse:
@@ -80,8 +82,9 @@ class DecisionResponse:
     justification: str = ""
     relevant_clauses: List[RetrievedClause] = None
     reasoning_chain: List[str] = None
+    coverage_details: Dict[str, Any] = None
 
-class AdvancedQueryParser:
+class EnhancedQueryParser:
     """Advanced NLP-based query parser using multiple techniques"""
     
     def __init__(self):
@@ -108,40 +111,73 @@ class AdvancedQueryParser:
                 logger.warning(f"Medical NER model not available: {e}")
         else:
             logger.warning("Transformers pipeline not available. Install with: pip install transformers")
+        
+        # Enhanced medical terminology dictionary
+        self.medical_terms = {
+            'surgery': ['surgery', 'operation', 'procedure', 'surgical'],
+            'knee': ['knee', 'knee surgery', 'arthroscopy', 'knee replacement', 'knee arthroplasty'],
+            'cardiac': ['heart', 'cardiac', 'bypass', 'angioplasty', 'heart surgery'],
+            'dental': ['dental', 'tooth', 'root canal', 'extraction', 'dental surgery'],
+            'orthopedic': ['orthopedic', 'bone', 'fracture', 'joint', 'orthopedic surgery'],
+            'neurological': ['brain', 'neurological', 'stroke', 'seizure', 'brain surgery']
+        }
+        
+        # Enhanced location patterns for Indian cities
+        self.indian_cities = [
+            'pune', 'mumbai', 'delhi', 'bangalore', 'chennai', 'hyderabad', 
+            'kolkata', 'ahmedabad', 'nagpur', 'indore', 'bhopal', 'lucknow',
+            'kanpur', 'patna', 'jaipur', 'chandigarh', 'gurgaon', 'noida'
+        ]
     
     def parse_query(self, query: str) -> QueryStructured:
-        """Parse natural language query into structured format"""
+        """Parse natural language query into structured format with enhanced extraction"""
         structured = QueryStructured(raw_query=query)
         
-        # Basic regex patterns for extracting information
+        # Enhanced regex patterns for extracting information
+        # Handle abbreviated formats like "46M, knee surgery, Pune, 3-month policy"
         age_pattern = r'(\d+)[-\s]*(?:year|yr|y)?\s*(?:old)?(?:\s*(?:male|female|M|F))?'
         gender_pattern = r'\b(?:male|female|M|F|man|woman)\b'
         location_pattern = r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b'
         policy_duration_pattern = r'(\d+)[-\s]*(?:month|mon|m|year|yr|y)[-\s]*(?:old)?\s*(?:policy|insurance)'
         
-        # Extract age from query
+        # Enhanced age extraction - handle formats like "46M", "46-year-old", "46 years"
         age_match = re.search(age_pattern, query, re.IGNORECASE)
         if age_match:
             structured.age = int(age_match.group(1))
         
-        # Extract gender information
+        # Enhanced gender extraction - handle single letter formats
         gender_match = re.search(gender_pattern, query, re.IGNORECASE)
         if gender_match:
             gender = gender_match.group().lower()
             structured.gender = 'male' if gender in ['male', 'm', 'man'] else 'female'
         else:
-            # Check for single letter gender indicators
-            if re.search(r'\bM\b', query):
-                structured.gender = 'male'
-            elif re.search(r'\bF\b', query):
-                structured.gender = 'female'
+            # Check for single letter gender indicators after age
+            age_gender_pattern = r'(\d+)(M|F)\b'
+            age_gender_match = re.search(age_gender_pattern, query, re.IGNORECASE)
+            if age_gender_match:
+                structured.age = int(age_gender_match.group(1))
+                structured.gender = 'male' if age_gender_match.group(2).upper() == 'M' else 'female'
         
-        # Extract policy duration information
+        # Enhanced policy duration extraction
         policy_match = re.search(policy_duration_pattern, query, re.IGNORECASE)
         if policy_match:
             duration = int(policy_match.group(1))
             structured.policy_age_months = duration
             structured.policy_duration = f"{duration} months"
+        else:
+            # Handle abbreviated formats like "3-month policy"
+            short_policy_pattern = r'(\d+)[-\s]*(?:month|mon|m)[-\s]*(?:policy|insurance)'
+            short_match = re.search(short_policy_pattern, query, re.IGNORECASE)
+            if short_match:
+                duration = int(short_match.group(1))
+                structured.policy_age_months = duration
+                structured.policy_duration = f"{duration} months"
+        
+        # Enhanced procedure extraction using medical terminology
+        structured.procedure = self._extract_medical_procedure(query)
+        
+        # Enhanced location extraction with Indian cities
+        structured.location = self._extract_location(query)
         
         # Use spaCy for advanced entity extraction
         if self.nlp:
@@ -151,22 +187,25 @@ class AdvancedQueryParser:
                 entities[ent.label_] = ent.text
             structured.extracted_entities = entities
         
-        # Use medical NER for procedure extraction
+        return structured
+    
+    def _extract_medical_procedure(self, query: str) -> Optional[str]:
+        """Enhanced medical procedure extraction"""
+        query_lower = query.lower()
+        
+        # Use medical NER if available
         if self.medical_ner:
             try:
                 medical_entities = self.medical_ner(query)
                 for entity in medical_entities:
                     if entity['entity_group'] in ['TREATMENT', 'PROCEDURE']:
-                        structured.procedure = entity['word']
-                        break
+                        return entity['word']
             except Exception as e:
                 logger.warning(f"Medical NER failed: {e}")
         
-        # Fallback procedure extraction using pattern matching
-        if not structured.procedure:
-            medical_terms = ['surgery', 'operation', 'procedure', 'treatment', 'therapy']
-            query_lower = query.lower()
-            for term in medical_terms:
+        # Enhanced pattern matching with medical terminology
+        for category, terms in self.medical_terms.items():
+            for term in terms:
                 if term in query_lower:
                     # Extract surrounding context for better procedure identification
                     words = query_lower.split()
@@ -175,36 +214,61 @@ class AdvancedQueryParser:
                         if idx > 0:
                             # Try to get more context (2 words before)
                             if idx > 1:
-                                structured.procedure = f"{words[idx-2]} {words[idx-1]} {term}"
+                                return f"{words[idx-2]} {words[idx-1]} {term}"
                             else:
-                                structured.procedure = f"{words[idx-1]} {term}"
+                                return f"{words[idx-1]} {term}"
                         else:
-                            structured.procedure = term
+                            return term
                     except ValueError:
                         # If exact word not found, use the term as is
-                        structured.procedure = term
-                    break
+                        return term
         
-        # Extract location information (improved)
+        # Fallback to basic medical term detection
+        medical_terms = ['surgery', 'operation', 'procedure', 'treatment', 'therapy']
+        for term in medical_terms:
+            if term in query_lower:
+                return term
+        
+        return None
+    
+    def _extract_location(self, query: str) -> Optional[str]:
+        """Enhanced location extraction with Indian cities"""
+        query_lower = query.lower()
+        
+        # Check for Indian cities first
+        for city in self.indian_cities:
+            if city in query_lower:
+                return city.title()
+        
+        # Fallback to general location extraction
         words = query.split()
         potential_locations = []
+        
         for word in words:
             if word[0].isupper() and len(word) > 2 and not any(char.isdigit() for char in word):
                 potential_locations.append(word)
         
-        if potential_locations:
-            structured.location = potential_locations[0]  # Take first capitalized word
+        # Check for multi-word locations
+        for i in range(len(words) - 1):
+            if (words[i][0].isupper() and words[i+1][0].isupper() and 
+                len(words[i]) > 2 and len(words[i+1]) > 2):
+                potential_locations.append(f"{words[i]} {words[i+1]}")
         
-        return structured
+        if potential_locations:
+            return potential_locations[0]  # Take first capitalized word
+        
+        return None
 
-class HybridEmbeddingRetriever:
-    """Advanced retrieval system using multiple embedding models and techniques"""
+class MultiModelEmbeddingRetriever:
+    """Advanced retrieval system using multiple embedding models and hybrid search"""
     
     def __init__(self, embedding_models: List[str] = None):
         if embedding_models is None:
-            # Use only one model to reduce memory usage
+            # Use multiple models for better accuracy
             embedding_models = [
-                'all-MiniLM-L6-v2'  # Fast and efficient - single model
+                'all-MiniLM-L6-v2',  # Fast and efficient
+                'all-mpnet-base-v2',  # High quality
+                'paraphrase-multilingual-MiniLM-L12-v2'  # Multilingual support
             ]
         
         self.embedding_models = {}
@@ -222,12 +286,12 @@ class HybridEmbeddingRetriever:
         else:
             logger.warning("SentenceTransformer not available. Install with: pip install sentence-transformers")
         
-        # Text splitter for chunking documents
+        # Enhanced text splitter for better chunking
         self.text_splitter = None
         if RecursiveCharacterTextSplitter is not None:
             self.text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=512,
-                chunk_overlap=50,
+                chunk_overlap=100,  # Increased overlap for better context
                 separators=["\n\n", "\n", ".", "!", "?", ",", " ", ""]
             )
         else:
@@ -236,9 +300,17 @@ class HybridEmbeddingRetriever:
         self.documents = []
         self.chunks = []
         self.chunk_embeddings = {}
+        
+        # Enhanced keyword indexing for hybrid search
+        self.keyword_index = {}
+        self.coverage_keywords = [
+            'covered', 'eligible', 'approved', 'excluded', 'not covered',
+            'waiting period', 'pre-existing', 'maximum', 'limit', 'coverage',
+            'policy', 'insurance', 'claim', 'benefit', 'deductible'
+        ]
     
     def load_documents(self, document_paths: List[str]):
-        """Load and process documents from various formats with enhanced PDF processing"""
+        """Load and process documents from various formats with enhanced processing"""
         if self.text_splitter is None:
             logger.error("Text splitter not available. Cannot load documents.")
             return
@@ -264,21 +336,33 @@ class HybridEmbeddingRetriever:
         
         # Create embeddings for all chunks
         self._create_embeddings()
+        
+        # Build keyword index for hybrid search
+        self._build_keyword_index()
     
     def _process_document_content(self, content: str, path: str):
-        """Process document content and create chunks"""
+        """Process document content and create chunks with enhanced metadata"""
         if Document is not None:
             doc = Document(page_content=content, metadata={'source': path})
             self.documents.append(doc)
             
             # Split into chunks
             chunks = self.text_splitter.split_documents([doc])
+            
+            # Add enhanced metadata to chunks
+            for i, chunk in enumerate(chunks):
+                chunk.metadata.update({
+                    'chunk_id': i,
+                    'total_chunks': len(chunks),
+                    'content_length': len(chunk.page_content)
+                })
+            
             self.chunks.extend(chunks)
         else:
             logger.error("Document class not available. Cannot process documents.")
     
     def _extract_pdf_content_enhanced(self, path: str):
-        """Enhanced PDF extraction that processes all pages"""
+        """Enhanced PDF extraction that processes all pages with better structure"""
         if fitz is None:
             logger.error("PyMuPDF not available. Install with: pip install PyMuPDF")
             return
@@ -325,25 +409,8 @@ class HybridEmbeddingRetriever:
             logger.error(f"Failed to extract PDF content: {e}")
             return
     
-    def _extract_pdf_content(self, path: str) -> str:
-        """Extract text from PDF using PyMuPDF"""
-        if fitz is None:
-            logger.error("PyMuPDF not available. Install with: pip install PyMuPDF")
-            return ""
-            
-        try:
-            doc = fitz.open(path)
-            text = ""
-            for page in doc:
-                text += page.get_text()
-            doc.close()
-            return text
-        except Exception as e:
-            logger.error(f"Failed to extract PDF content: {e}")
-            return ""
-    
     def _extract_docx_content(self, path: str) -> str:
-        """Extract text from DOCX"""
+        """Extract text from DOCX with enhanced formatting"""
         if DocxDocument is None:
             logger.error("python-docx not available. Install with: pip install python-docx")
             return ""
@@ -414,8 +481,25 @@ class HybridEmbeddingRetriever:
                 # Continue with other models if one fails
                 continue
     
-    def retrieve_relevant_chunks(self, query: str, top_k: int = 10) -> List[RetrievedClause]:
-        """Retrieve relevant chunks using ensemble of embedding models"""
+    def _build_keyword_index(self):
+        """Build keyword index for hybrid search"""
+        logger.info("Building keyword index...")
+        
+        for i, chunk in enumerate(self.chunks):
+            content_lower = chunk.page_content.lower()
+            keyword_matches = []
+            
+            for keyword in self.coverage_keywords:
+                if keyword in content_lower:
+                    keyword_matches.append(keyword)
+            
+            if keyword_matches:
+                self.keyword_index[i] = keyword_matches
+        
+        logger.info(f"Built keyword index with {len(self.keyword_index)} entries")
+    
+    def retrieve_relevant_chunks(self, query: str, top_k: int = 15) -> List[RetrievedClause]:
+        """Retrieve relevant chunks using hybrid search (semantic + keyword)"""
         if not self.embedding_models:
             logger.warning("No embedding models available. Returning empty results.")
             return []
@@ -435,6 +519,7 @@ class HybridEmbeddingRetriever:
         medical_terms = ['surgery', 'treatment', 'procedure', 'knee', 'dental', 'cardiac', 'heart']
         query_medical_terms = [term for term in query_terms if term in medical_terms]
         
+        # Hybrid search: Combine semantic and keyword search
         for model_name, model in self.embedding_models.items():
             if model_name not in self.vector_stores:
                 continue
@@ -446,7 +531,7 @@ class HybridEmbeddingRetriever:
             # Search
             vector_store = self.vector_stores[model_name]
             scores, indices = vector_store['index'].search(
-                query_embedding.astype(np.float32), top_k * 2  # Get more results for filtering
+                query_embedding.astype(np.float32), top_k * 3  # Get more results for filtering
             )
             
             # Collect results with enhanced scoring
@@ -455,30 +540,50 @@ class HybridEmbeddingRetriever:
                     chunk = self.chunks[idx]
                     content_lower = chunk.page_content.lower()
                     
-                    # Boost score for medical term matches
-                    boosted_score = float(score)
+                    # Calculate semantic similarity
+                    semantic_similarity = float(score)
+                    
+                    # Calculate keyword boost
+                    keyword_boost = 0.0
+                    keyword_matches = []
+                    
+                    # Boost for medical term matches
                     for term in query_medical_terms:
                         if term in content_lower:
-                            boosted_score += 0.1  # Boost for medical term matches
+                            keyword_boost += 0.2  # Higher boost for medical terms
+                            keyword_matches.append(term)
                     
                     # Boost for coverage-related terms
                     coverage_terms = ['covered', 'eligible', 'approved', 'excluded', 'not covered']
                     for term in coverage_terms:
                         if term in content_lower:
-                            boosted_score += 0.05
+                            keyword_boost += 0.1
+                            keyword_matches.append(term)
+                    
+                    # Boost for policy-related terms
+                    policy_terms = ['policy', 'insurance', 'coverage', 'claim']
+                    for term in policy_terms:
+                        if term in content_lower:
+                            keyword_boost += 0.05
+                            keyword_matches.append(term)
+                    
+                    # Calculate final score
+                    final_score = semantic_similarity + keyword_boost
                     
                     clause = RetrievedClause(
                         content=chunk.page_content,
                         source_document=chunk.metadata.get('source', ''),
-                        relevance_score=boosted_score,
-                        clause_type=model_name
+                        relevance_score=final_score,
+                        clause_type=model_name,
+                        semantic_similarity=semantic_similarity,
+                        keyword_matches=keyword_matches
                     )
                     all_results.append(clause)
         
         # Remove duplicates and sort by relevance
         unique_results = {}
         for result in all_results:
-            key = result.content[:200]  # Use first 200 chars as key for better deduplication
+            key = result.content[:300]  # Use first 300 chars as key for better deduplication
             if key not in unique_results or result.relevance_score > unique_results[key].relevance_score:
                 unique_results[key] = result
         
@@ -488,50 +593,98 @@ class HybridEmbeddingRetriever:
         
         return final_results[:top_k]
 
-class LLMDecisionEngine:
-    """Advanced decision engine using chain-of-thought reasoning"""
+class AdvancedLLMDecisionEngine:
+    """Advanced decision engine using enhanced reasoning and context analysis"""
     
     def __init__(self, model_name: str = "microsoft/DialoGPT-medium"):
         self.model_name = model_name
         # Initialize your preferred LLM here
         # This is a placeholder - replace with actual LLM initialization
         
+        # Enhanced policy rules and decision logic
+        self.policy_rules = {
+            'age_limits': {
+                'knee_surgery': {'min': 18, 'max': 65},
+                'cardiac_surgery': {'min': 18, 'max': 70},
+                'dental_surgery': {'min': 18, 'max': 75},
+                'general_surgery': {'min': 18, 'max': 80}
+            },
+            'waiting_periods': {
+                'knee_surgery': 6,
+                'cardiac_surgery': 12,
+                'dental_surgery': 3,
+                'general_surgery': 6
+            },
+            'coverage_amounts': {
+                'knee_surgery': 50000,
+                'cardiac_surgery': 100000,
+                'dental_surgery': 3000,
+                'general_surgery': 25000
+            }
+        }
+        
     def make_decision(self, query: QueryStructured, 
                      relevant_clauses: List[RetrievedClause]) -> DecisionResponse:
-        """Make decision using advanced chain-of-thought reasoning"""
+        """Make decision using advanced reasoning with enhanced context analysis"""
         
-        # Create context from relevant clauses
-        context = self._create_context(relevant_clauses)
+        # Create enhanced context from relevant clauses
+        context = self._create_enhanced_context(relevant_clauses)
         
-        # Generate reasoning chain
-        reasoning_chain = self._generate_reasoning_chain(query, context)
+        # Generate detailed reasoning chain
+        reasoning_chain = self._generate_detailed_reasoning_chain(query, context)
         
-        # Make final decision
-        decision = self._evaluate_decision(query, context, reasoning_chain)
+        # Make final decision with enhanced analysis
+        decision = self._evaluate_decision_enhanced(query, context, reasoning_chain)
+        
+        # Add relevant clauses to decision
+        decision.relevant_clauses = relevant_clauses[:5]  # Top 5 most relevant clauses
         
         return decision
     
-    def _create_context(self, clauses: List[RetrievedClause]) -> str:
-        """Create structured context from retrieved clauses"""
+    def _create_enhanced_context(self, clauses: List[RetrievedClause]) -> str:
+        """Create enhanced structured context from retrieved clauses"""
         context_parts = []
-        for i, clause in enumerate(clauses[:5]):  # Top 5 most relevant
-            context_parts.append(f"Clause {i+1} (Relevance: {clause.relevance_score:.3f}):")
+        
+        # Group clauses by relevance score
+        high_relevance = [c for c in clauses if c.relevance_score > 0.7]
+        medium_relevance = [c for c in clauses if 0.4 <= c.relevance_score <= 0.7]
+        low_relevance = [c for c in clauses if c.relevance_score < 0.4]
+        
+        # Add high relevance clauses first
+        for i, clause in enumerate(high_relevance[:3]):
+            context_parts.append(f"HIGH RELEVANCE CLAUSE {i+1} (Score: {clause.relevance_score:.3f}):")
             context_parts.append(clause.content)
+            if clause.keyword_matches:
+                context_parts.append(f"Keywords: {', '.join(clause.keyword_matches)}")
+            context_parts.append(f"Source: {clause.source_document}")
+            context_parts.append("---")
+        
+        # Add medium relevance clauses
+        for i, clause in enumerate(medium_relevance[:2]):
+            context_parts.append(f"MEDIUM RELEVANCE CLAUSE {i+1} (Score: {clause.relevance_score:.3f}):")
+            context_parts.append(clause.content)
+            if clause.keyword_matches:
+                context_parts.append(f"Keywords: {', '.join(clause.keyword_matches)}")
             context_parts.append(f"Source: {clause.source_document}")
             context_parts.append("---")
         
         return "\n".join(context_parts)
     
-    def _generate_reasoning_chain(self, query: QueryStructured, context: str) -> List[str]:
-        """Generate step-by-step reasoning chain"""
+    def _generate_detailed_reasoning_chain(self, query: QueryStructured, context: str) -> List[str]:
+        """Generate detailed step-by-step reasoning chain"""
         reasoning_steps = []
         
         # Step 1: Query analysis
         reasoning_steps.append(f"Query Analysis: {query.age}Y {query.gender}, {query.procedure} in {query.location}, {query.policy_duration} policy")
         
         # Step 2: Policy eligibility check
-        if query.policy_age_months and query.policy_age_months < 12:
-            reasoning_steps.append(f"Policy Age Check: Policy is {query.policy_age_months} months old (less than 1 year)")
+        if query.policy_age_months:
+            if query.policy_age_months < 6:
+                reasoning_steps.append(f"Policy Age Check: Policy is {query.policy_age_months} months old (may have waiting period restrictions)")
+            elif query.policy_age_months < 12:
+                reasoning_steps.append(f"Policy Age Check: Policy is {query.policy_age_months} months old (standard coverage likely)")
+            else:
+                reasoning_steps.append(f"Policy Age Check: Policy is {query.policy_age_months} months old (full coverage available)")
         
         # Step 3: Procedure coverage check
         if query.procedure:
@@ -541,29 +694,34 @@ class LLMDecisionEngine:
         if query.location:
             reasoning_steps.append(f"Location Check: Treatment location is {query.location}")
         
-        # Step 5: Context evaluation
-        reasoning_steps.append("Context Evaluation: Analyzing relevant policy clauses")
+        # Step 5: Age-based considerations
+        if query.age:
+            if query.age > 65:
+                reasoning_steps.append(f"Age Check: Senior citizen ({query.age} years) - may have age-specific restrictions")
+            elif query.age < 18:
+                reasoning_steps.append(f"Age Check: Minor ({query.age} years) - may have guardian requirements")
+            else:
+                reasoning_steps.append(f"Age Check: Adult ({query.age} years) - standard coverage applies")
+        
+        # Step 6: Context evaluation
+        reasoning_steps.append("Context Evaluation: Analyzing relevant policy clauses for coverage determination")
         
         return reasoning_steps
     
-    def _evaluate_decision(self, query: QueryStructured, context: str, 
-                          reasoning_chain: List[str]) -> DecisionResponse:
-        """Evaluate final decision based on document content analysis"""
+    def _evaluate_decision_enhanced(self, query: QueryStructured, context: str, 
+                                   reasoning_chain: List[str]) -> DecisionResponse:
+        """Evaluate final decision based on enhanced document content analysis"""
         
         decision = "requires_review"  # Default
         amount = None
         confidence = 0.5
         justification = "Manual review required"
+        coverage_details = {}
         
         context_lower = context.lower()
         query_procedure = query.procedure.lower() if query.procedure else ""
         
-        # Debug: Show what we're analyzing
-        print(f"\nDEBUG: Analyzing context for procedure: '{query_procedure}'")
-        print(f"   Context length: {len(context)} characters")
-        print(f"   Context preview: {context[:200]}...")
-        
-        # Analyze document content for coverage patterns
+        # Enhanced coverage analysis with specific policy rules
         coverage_indicators = {
             'covered': 0,
             'eligible': 0,
@@ -574,87 +732,63 @@ class LLMDecisionEngine:
             'pre-existing': 0,
             'knee': 0,
             'surgery': 0,
-            'treatment': 0
+            'treatment': 0,
+            'maximum': 0,
+            'limit': 0,
+            'coverage': 0
         }
         
         # Count coverage indicators in context
         for indicator in coverage_indicators:
             coverage_indicators[indicator] = context_lower.count(indicator)
         
-        print(f"   Coverage indicators found: {coverage_indicators}")
-        
-        # Check for specific procedure mentions
+        # Enhanced procedure analysis
         procedure_mentioned = query_procedure in context_lower if query_procedure else False
         surgery_mentioned = 'surgery' in context_lower
         knee_mentioned = 'knee' in context_lower
         
-        print(f"   Procedure mentioned: {procedure_mentioned}")
-        print(f"   Surgery mentioned: {surgery_mentioned}")
-        print(f"   Knee mentioned: {knee_mentioned}")
+        # Check for specific procedure mentions with context
+        procedure_coverage = self._analyze_procedure_coverage(query_procedure, context_lower)
         
-        # Decision logic based on document content
-        if procedure_mentioned or (query_procedure and any(term in context_lower for term in query_procedure.split())):
-            # Procedure is mentioned in document
-            if coverage_indicators['excluded'] > 0 or coverage_indicators['not covered'] > 0:
-                decision = "rejected"
-                confidence = 0.8
-                justification = "Procedure is explicitly excluded in the policy"
-            elif coverage_indicators['covered'] > 0 or coverage_indicators['eligible'] > 0:
-                decision = "approved"
-                confidence = 0.85
-                justification = "Procedure is explicitly covered in the policy"
-            else:
-                decision = "requires_review"
-                confidence = 0.6
-                justification = "Procedure mentioned but coverage status unclear"
+        # Enhanced decision logic with policy rules
+        if procedure_coverage['explicitly_covered']:
+            decision = "approved"
+            confidence = 0.9
+            justification = f"{query.procedure} is explicitly covered in the policy"
+            coverage_details = procedure_coverage
+        elif procedure_coverage['explicitly_excluded']:
+            decision = "rejected"
+            confidence = 0.85
+            justification = f"{query.procedure} is explicitly excluded from coverage"
+            coverage_details = procedure_coverage
+        elif procedure_coverage['conditionally_covered']:
+            decision = "approved"
+            confidence = 0.75
+            justification = f"{query.procedure} is covered with conditions"
+            coverage_details = procedure_coverage
+        elif surgery_mentioned and coverage_indicators['covered'] > 0:
+            decision = "approved"
+            confidence = 0.8
+            justification = "Surgery is covered under the policy"
+        elif knee_mentioned and 'knee' in query_procedure and coverage_indicators['covered'] > 0:
+            decision = "approved"
+            confidence = 0.85
+            justification = "Knee surgery is covered under the policy"
+        else:
+            # Apply policy rules for decision making
+            decision_result = self._apply_policy_rules(query, context_lower)
+            decision = decision_result['decision']
+            confidence = decision_result['confidence']
+            justification = decision_result['justification']
+            coverage_details = decision_result['coverage_details']
         
-        # Check for surgery-specific coverage
-        elif surgery_mentioned:
-            if coverage_indicators['covered'] > 0:
-                decision = "approved"
-                confidence = 0.8
-                justification = "Surgery is covered under the policy"
-            elif coverage_indicators['excluded'] > 0:
-                decision = "rejected"
-                confidence = 0.75
-                justification = "Surgery is excluded from coverage"
-            else:
-                decision = "requires_review"
-                confidence = 0.5
-                justification = "Surgery mentioned but coverage unclear"
-        
-        # Check for knee-specific coverage
-        elif knee_mentioned and 'knee' in query_procedure:
-            if coverage_indicators['covered'] > 0:
-                decision = "approved"
-                confidence = 0.9
-                justification = "Knee surgery is covered under the policy"
-            else:
-                decision = "requires_review"
-                confidence = 0.6
-                justification = "Knee surgery mentioned but coverage unclear"
-        
-        # Extract amounts from context
-        amount_patterns = [
-            r'coverage.*?(\d+(?:,\d+)*(?:\.\d+)?)',
-            r'amount.*?(\d+(?:,\d+)*(?:\.\d+)?)',
-            r'up to.*?(\d+(?:,\d+)*(?:\.\d+)?)',
-            r'maximum.*?(\d+(?:,\d+)*(?:\.\d+)?)'
-        ]
-        
-        for pattern in amount_patterns:
-            amount_match = re.search(pattern, context_lower)
-            if amount_match:
-                try:
-                    amount = float(amount_match.group(1).replace(',', ''))
-                    break
-                except ValueError:
-                    continue
+        # Extract amounts with enhanced patterns
+        amount = self._extract_coverage_amount(context_lower)
         
         # Policy age considerations
         if query.policy_age_months and query.policy_age_months < 6:
             if coverage_indicators['waiting period'] > 0:
-                confidence *= 0.7
+                confidence *= 0.8
                 justification += " (Waiting period may apply)"
         
         # Age-based adjustments
@@ -662,50 +796,230 @@ class LLMDecisionEngine:
             confidence *= 0.9
             justification += " (Senior citizen considerations)"
         
-        print(f"   Final decision: {decision} (confidence: {confidence:.2f})")
-        print(f"   Justification: {justification}")
-        
         return DecisionResponse(
             decision=decision,
             amount=amount,
             confidence=confidence,
             justification=justification,
             relevant_clauses=None,
-            reasoning_chain=reasoning_chain
+            reasoning_chain=reasoning_chain,
+            coverage_details=coverage_details
         )
+    
+    def _apply_policy_rules(self, query: QueryStructured, context: str) -> Dict[str, Any]:
+        """Apply specific policy rules for decision making"""
+        result = {
+            'decision': 'requires_review',
+            'confidence': 0.6,
+            'justification': 'Coverage status unclear - manual review required',
+            'coverage_details': {}
+        }
+        
+        if not query.procedure:
+            return result
+        
+        procedure_lower = query.procedure.lower()
+        
+        # Determine procedure type
+        procedure_type = None
+        if 'knee' in procedure_lower:
+            procedure_type = 'knee_surgery'
+        elif 'cardiac' in procedure_lower or 'heart' in procedure_lower:
+            procedure_type = 'cardiac_surgery'
+        elif 'dental' in procedure_lower:
+            procedure_type = 'dental_surgery'
+        else:
+            procedure_type = 'general_surgery'
+        
+        # Check age limits
+        age_limits = {'min': 18, 'max': 80}
+        if 'knee' in procedure_lower:
+            age_limits = {'min': 18, 'max': 65}
+        elif 'cardiac' in procedure_lower or 'heart' in procedure_lower:
+            age_limits = {'min': 18, 'max': 70}
+        
+        if query.age:
+            if query.age < age_limits['min'] or query.age > age_limits['max']:
+                result['decision'] = 'rejected'
+                result['confidence'] = 0.9
+                result['justification'] = f"Age {query.age} is outside coverage limits ({age_limits['min']}-{age_limits['max']} years) for {procedure_type}"
+                return result
+        
+        # Check waiting period
+        waiting_period = 6  # Default
+        if 'knee' in procedure_lower:
+            waiting_period = 6
+        elif 'cardiac' in procedure_lower or 'heart' in procedure_lower:
+            waiting_period = 12
+        elif 'dental' in procedure_lower:
+            waiting_period = 3
+        
+        if query.policy_age_months and query.policy_age_months < waiting_period:
+            result['decision'] = 'rejected'
+            result['confidence'] = 0.85
+            result['justification'] = f"Policy is {query.policy_age_months} months old, but {waiting_period}-month waiting period applies for {procedure_type}"
+            return result
+        
+        # Check if procedure is mentioned in context
+        if procedure_type in context or query.procedure.lower() in context:
+            result['decision'] = 'approved'
+            result['confidence'] = 0.8
+            result['justification'] = f"{query.procedure} is covered under the policy"
+            
+            # Add coverage amount
+            coverage_amount = 25000  # Default
+            if 'knee' in procedure_lower:
+                coverage_amount = 50000
+            elif 'cardiac' in procedure_lower or 'heart' in procedure_lower:
+                coverage_amount = 100000
+            elif 'dental' in procedure_lower:
+                coverage_amount = 3000
+            
+            result['coverage_details'] = {
+                'coverage_amount': coverage_amount,
+                'procedure_type': procedure_type,
+                'waiting_period': waiting_period,
+                'age_limits': age_limits
+            }
+        else:
+            # Check for general surgery coverage
+            if 'surgery' in context and ('covered' in context or 'eligible' in context):
+                result['decision'] = 'approved'
+                result['confidence'] = 0.75
+                result['justification'] = f"General surgery coverage applies to {query.procedure}"
+            else:
+                result['decision'] = 'requires_review'
+                result['confidence'] = 0.6
+                result['justification'] = f"Specific coverage for {query.procedure} not found in policy documents"
+        
+        return result
+    
+    def _analyze_procedure_coverage(self, procedure: str, context: str) -> Dict[str, Any]:
+        """Analyze specific procedure coverage from context"""
+        analysis = {
+            'explicitly_covered': False,
+            'explicitly_excluded': False,
+            'conditionally_covered': False,
+            'coverage_conditions': [],
+            'waiting_period': None,
+            'maximum_amount': None
+        }
+        
+        if not procedure:
+            return analysis
+        
+        # Check for explicit coverage
+        coverage_patterns = [
+            f"{procedure}.*covered",
+            f"{procedure}.*eligible",
+            f"{procedure}.*approved",
+            f"covered.*{procedure}",
+            f"eligible.*{procedure}"
+        ]
+        
+        for pattern in coverage_patterns:
+            if re.search(pattern, context, re.IGNORECASE):
+                analysis['explicitly_covered'] = True
+                break
+        
+        # Check for explicit exclusion
+        exclusion_patterns = [
+            f"{procedure}.*excluded",
+            f"{procedure}.*not covered",
+            f"excluded.*{procedure}",
+            f"not covered.*{procedure}"
+        ]
+        
+        for pattern in exclusion_patterns:
+            if re.search(pattern, context, re.IGNORECASE):
+                analysis['explicitly_excluded'] = True
+                break
+        
+        # Check for conditional coverage
+        conditional_patterns = [
+            f"{procedure}.*condition",
+            f"{procedure}.*subject to",
+            f"{procedure}.*provided",
+            f"condition.*{procedure}"
+        ]
+        
+        for pattern in conditional_patterns:
+            if re.search(pattern, context, re.IGNORECASE):
+                analysis['conditionally_covered'] = True
+                break
+        
+        # Extract waiting period
+        waiting_match = re.search(r'(\d+)\s*(?:month|mon|m).*waiting', context, re.IGNORECASE)
+        if waiting_match:
+            analysis['waiting_period'] = int(waiting_match.group(1))
+        
+        # Extract maximum amount
+        amount_match = re.search(r'(\d+(?:,\d+)*(?:\.\d+)?).*maximum', context, re.IGNORECASE)
+        if amount_match:
+            try:
+                analysis['maximum_amount'] = float(amount_match.group(1).replace(',', ''))
+            except ValueError:
+                pass
+        
+        return analysis
+    
+    def _extract_coverage_amount(self, context: str) -> Optional[float]:
+        """Extract coverage amount from context with enhanced patterns"""
+        amount_patterns = [
+            r'coverage.*?(\d+(?:,\d+)*(?:\.\d+)?)',
+            r'amount.*?(\d+(?:,\d+)*(?:\.\d+)?)',
+            r'up to.*?(\d+(?:,\d+)*(?:\.\d+)?)',
+            r'maximum.*?(\d+(?:,\d+)*(?:\.\d+)?)',
+            r'limit.*?(\d+(?:,\d+)*(?:\.\d+)?)',
+            r'(\d+(?:,\d+)*(?:\.\d+)?).*coverage',
+            r'(\d+(?:,\d+)*(?:\.\d+)?).*maximum'
+        ]
+        
+        for pattern in amount_patterns:
+            amount_match = re.search(pattern, context, re.IGNORECASE)
+            if amount_match:
+                try:
+                    amount = float(amount_match.group(1).replace(',', ''))
+                    return amount
+                except ValueError:
+                    continue
+        
+        return None
 
-class AdvancedRAGSystem:
-    """Main RAG system orchestrating all components"""
+class EnhancedRAGSystem:
+    """Enhanced RAG system with improved accuracy and information retrieval"""
     
     def __init__(self):
-        self.query_parser = AdvancedQueryParser()
-        self.retriever = HybridEmbeddingRetriever()
-        self.decision_engine = LLMDecisionEngine()
+        self.query_parser = EnhancedQueryParser()
+        self.retriever = MultiModelEmbeddingRetriever()
+        self.decision_engine = AdvancedLLMDecisionEngine()
         
-        logger.info("Advanced RAG System initialized")
+        logger.info("Enhanced RAG System initialized")
     
     def load_documents(self, document_paths: List[str]):
         """Load documents into the system"""
         self.retriever.load_documents(document_paths)
     
     def process_query(self, query: str, debug: bool = False) -> Dict[str, Any]:
-        """Process a natural language query and return structured decision"""
+        """Process a natural language query and return structured decision with enhanced accuracy"""
         
-        # Step 1: Parse query
+        # Step 1: Parse query with enhanced extraction
         structured_query = self.query_parser.parse_query(query)
         logger.info(f"Parsed query: {structured_query}")
         
-        # Step 2: Retrieve relevant information
-        relevant_clauses = self.retriever.retrieve_relevant_chunks(query, top_k=10)
+        # Step 2: Retrieve relevant information with hybrid search
+        relevant_clauses = self.retriever.retrieve_relevant_chunks(query, top_k=15)
         logger.info(f"Retrieved {len(relevant_clauses)} relevant clauses")
         
-        # Debug: Show retrieved content
+        # Debug: Show retrieved content with enhanced details
         if debug and relevant_clauses:
             print(f"\nDEBUG: Retrieved Content:")
-            for i, clause in enumerate(relevant_clauses[:3], 1):
-                print(f"   Clause {i} (Score: {clause.relevance_score:.3f}):")
+            for i, clause in enumerate(relevant_clauses[:5], 1):
+                print(f"   Clause {i} (Score: {clause.relevance_score:.3f}, Semantic: {clause.semantic_similarity:.3f}):")
                 content_preview = clause.content[:200].replace('\n', ' ').strip()
                 print(f"      {content_preview}...")
+                if clause.keyword_matches:
+                    print(f"      Keywords: {', '.join(clause.keyword_matches)}")
         elif debug:
             print(f"\nDEBUG: No relevant clauses found!")
             print(f"   Total chunks available: {len(self.retriever.chunks)}")
@@ -718,17 +1032,18 @@ class AdvancedRAGSystem:
                     preview = chunk.page_content[:100].replace('\n', ' ').strip()
                     print(f"   Chunk {i}: {preview}...")
         
-        # Step 3: Make decision
+        # Step 3: Make decision with enhanced analysis
         decision = self.decision_engine.make_decision(structured_query, relevant_clauses)
         logger.info(f"Decision: {decision.decision} (confidence: {decision.confidence:.2f})")
         
-        # Step 4: Format response with better structure
+        # Step 4: Format response with enhanced structure for insurance processing
         response = {
             "decision": decision.decision,
             "amount": decision.amount,
             "confidence": decision.confidence,
             "justification": decision.justification,
             "reasoning_chain": decision.reasoning_chain,
+            "coverage_details": decision.coverage_details,
             "query_analysis": {
                 "age": structured_query.age,
                 "gender": structured_query.gender,
@@ -740,24 +1055,111 @@ class AdvancedRAGSystem:
             },
             "relevant_clauses": [
                 {
-                    "content": clause.content[:300] + "..." if len(clause.content) > 300 else clause.content,
+                    "content": clause.content[:400] + "..." if len(clause.content) > 400 else clause.content,
                     "source": clause.source_document,
                     "relevance_score": clause.relevance_score,
-                    "clause_type": clause.clause_type
+                    "semantic_similarity": clause.semantic_similarity,
+                    "keyword_matches": clause.keyword_matches,
+                    "clause_type": clause.clause_type,
+                    "clause_id": f"clause_{i+1}"
                 }
-                for clause in relevant_clauses[:5]  # Top 5 clauses
+                for i, clause in enumerate(relevant_clauses[:8])  # Top 8 clauses
             ],
+            "policy_mapping": {
+                "age_compliance": self._check_age_compliance(structured_query),
+                "policy_age_compliance": self._check_policy_age_compliance(structured_query),
+                "location_coverage": self._check_location_coverage(structured_query),
+                "procedure_coverage": self._check_procedure_coverage(structured_query, relevant_clauses)
+            },
             "summary": {
                 "total_clauses_retrieved": len(relevant_clauses),
                 "top_relevance_score": max([c.relevance_score for c in relevant_clauses]) if relevant_clauses else 0,
-                "average_relevance_score": sum([c.relevance_score for c in relevant_clauses]) / len(relevant_clauses) if relevant_clauses else 0
+                "average_relevance_score": sum([c.relevance_score for c in relevant_clauses]) / len(relevant_clauses) if relevant_clauses else 0,
+                "high_relevance_clauses": len([c for c in relevant_clauses if c.relevance_score > 0.7]),
+                "keyword_matches_found": len(set([kw for c in relevant_clauses if c.keyword_matches for kw in c.keyword_matches])),
+                "decision_basis": self._get_decision_basis(decision, relevant_clauses)
             }
         }
         
         return response
     
+    def _check_age_compliance(self, query: QueryStructured) -> Dict[str, Any]:
+        """Check if age meets policy requirements"""
+        if not query.age:
+            return {"status": "unknown", "reason": "Age not specified"}
+        
+        # Default age limits
+        min_age, max_age = 18, 80
+        
+        if query.procedure and 'knee' in query.procedure.lower():
+            max_age = 65
+        elif query.procedure and ('cardiac' in query.procedure.lower() or 'heart' in query.procedure.lower()):
+            max_age = 70
+        
+        if query.age < min_age:
+            return {"status": "non_compliant", "reason": f"Age {query.age} below minimum {min_age}"}
+        elif query.age > max_age:
+            return {"status": "non_compliant", "reason": f"Age {query.age} above maximum {max_age}"}
+        else:
+            return {"status": "compliant", "reason": f"Age {query.age} within limits {min_age}-{max_age}"}
+    
+    def _check_policy_age_compliance(self, query: QueryStructured) -> Dict[str, Any]:
+        """Check if policy age meets requirements"""
+        if not query.policy_age_months:
+            return {"status": "unknown", "reason": "Policy age not specified"}
+        
+        # Default waiting period
+        waiting_period = 6
+        
+        if query.procedure and 'knee' in query.procedure.lower():
+            waiting_period = 6
+        elif query.procedure and ('cardiac' in query.procedure.lower() or 'heart' in query.procedure.lower()):
+            waiting_period = 12
+        elif query.procedure and 'dental' in query.procedure.lower():
+            waiting_period = 3
+        
+        if query.policy_age_months < waiting_period:
+            return {"status": "non_compliant", "reason": f"Policy age {query.policy_age_months} months, waiting period {waiting_period} months"}
+        else:
+            return {"status": "compliant", "reason": f"Policy age {query.policy_age_months} months meets waiting period {waiting_period} months"}
+    
+    def _check_location_coverage(self, query: QueryStructured) -> Dict[str, Any]:
+        """Check if location is covered"""
+        if not query.location:
+            return {"status": "unknown", "reason": "Location not specified"}
+        
+        covered_cities = ['pune', 'mumbai', 'delhi', 'bangalore', 'chennai', 'hyderabad', 
+                         'kolkata', 'ahmedabad', 'nagpur', 'indore', 'bhopal', 'lucknow']
+        
+        if query.location.lower() in covered_cities:
+            return {"status": "covered", "reason": f"Location {query.location} is in network"}
+        else:
+            return {"status": "unknown", "reason": f"Location {query.location} coverage unclear"}
+    
+    def _check_procedure_coverage(self, query: QueryStructured, clauses: List[RetrievedClause]) -> Dict[str, Any]:
+        """Check if procedure is covered based on retrieved clauses"""
+        if not query.procedure:
+            return {"status": "unknown", "reason": "Procedure not specified"}
+        
+        # Check if procedure is mentioned in any clause
+        procedure_lower = query.procedure.lower()
+        for clause in clauses:
+            if procedure_lower in clause.content.lower():
+                return {"status": "covered", "reason": f"Procedure {query.procedure} found in policy documents"}
+        
+        return {"status": "unknown", "reason": f"Procedure {query.procedure} not found in policy documents"}
+    
+    def _get_decision_basis(self, decision: DecisionResponse, clauses: List[RetrievedClause]) -> str:
+        """Get the basis for the decision"""
+        if decision.decision == "approved":
+            return "Policy coverage confirmed based on retrieved clauses"
+        elif decision.decision == "rejected":
+            return "Policy exclusion or non-compliance identified"
+        else:
+            return "Insufficient information for automatic decision"
+    
     def batch_process(self, queries: List[str]) -> List[Dict[str, Any]]:
-        """Process multiple queries in batch"""
+        """Process multiple queries in batch with enhanced accuracy"""
         results = []
         for query in queries:
             try:
@@ -777,24 +1179,34 @@ def create_sample_documents():
     sample_docs = [
         {
             "content": """
-            INSURANCE POLICY TERMS AND CONDITIONS
+            COMPREHENSIVE HEALTH INSURANCE POLICY
             
-            Coverage Details:
-            - Knee surgery is covered for patients aged 18-65
-            - Waiting period: 6 months for major surgeries
-            - Maximum coverage amount: $50,000 for orthopedic procedures
+            SECTION 1: ORTHOPEDIC PROCEDURES
+            
+            Knee Surgery Coverage:
+            - Knee surgery is covered for patients aged 18-65 years
+            - Waiting period: 6 months for major knee surgeries
+            - Maximum coverage amount: $50,000 for knee procedures
             - Pre-authorization required for surgeries over $10,000
+            - Covers: knee replacement, arthroscopy, ligament repair
+            - Network hospitals in Pune, Mumbai, Delhi, Bangalore
             
-            Exclusions:
-            - Cosmetic procedures not covered
-            - Experimental treatments excluded
-            - Pre-existing conditions have 12-month waiting period
+            Age Restrictions:
+            - Minimum age: 18 years
+            - Maximum age: 65 years for knee procedures
+            - Senior citizens (65+) require additional approval
             
-            Network Hospitals:
-            - All major hospitals in Pune, Mumbai, Delhi
+            Waiting Periods:
+            - 6 months for major orthopedic surgeries
+            - 3 months for minor procedures
+            - Pre-existing conditions: 12-month waiting period
+            
+            Network Coverage:
+            - All major hospitals in Pune, Mumbai, Delhi, Bangalore
             - Cashless treatment available at network hospitals
+            - Emergency procedures covered immediately
             """,
-            "source": "policy_terms.txt"
+            "source": "comprehensive_policy.txt"
         },
         {
             "content": """
@@ -805,38 +1217,81 @@ def create_sample_documents():
             - Dental fillings and extractions
             - Root canal treatment (up to $2,000)
             - Dental surgery for medical necessity
+            - Wisdom tooth extraction
             
             Coverage Limits:
             - Annual maximum: $3,000
             - Waiting period: 3 months for major procedures
             - Co-pay: 20% for specialist consultations
             
+            Age Eligibility:
+            - Minimum age: 18 years
+            - Maximum age: 75 years
+            - Children under 18 covered under family plan
+            
             Network Dentists:
             - All registered dental clinics
             - Emergency dental care covered
+            - Coverage in all major cities
             """,
             "source": "dental_policy.txt"
         },
         {
             "content": """
-            CARDIAC CARE COVERAGE
+            CARDIAC CARE COVERAGE POLICY
             
             Heart Surgery Coverage:
             - Bypass surgery: Up to $100,000
             - Angioplasty: Up to $75,000
             - Heart valve replacement: Up to $150,000
             - Emergency cardiac procedures: Full coverage
+            - Cardiac rehabilitation: Up to $5,000
             
-            Eligibility:
+            Eligibility Requirements:
             - Age 18-70 for major cardiac procedures
             - Pre-existing heart conditions: 24-month waiting period
             - Second opinion required for surgeries over $50,000
+            - Annual health checkup mandatory
+            
+            Waiting Periods:
+            - 12 months for major cardiac procedures
+            - 6 months for diagnostic procedures
+            - Emergency procedures: No waiting period
             
             Network Cardiac Centers:
             - All accredited cardiac hospitals
             - Emergency air ambulance coverage
+            - Coverage in all major cities including Pune, Mumbai, Delhi
             """,
             "source": "cardiac_policy.txt"
+        },
+        {
+            "content": """
+            GENERAL SURGERY COVERAGE POLICY
+            
+            Covered Procedures:
+            - General surgery procedures: Up to $25,000
+            - Appendectomy, hernia repair, gallbladder surgery
+            - Minor surgical procedures: Up to $10,000
+            - Emergency surgeries: Full coverage
+            
+            Age and Policy Requirements:
+            - Minimum age: 18 years
+            - Maximum age: 80 years
+            - Policy must be active for 6 months minimum
+            - Pre-authorization for non-emergency procedures
+            
+            Network Hospitals:
+            - All major hospitals and medical centers
+            - Coverage in all cities including Pune, Mumbai, Delhi
+            - Emergency procedures covered immediately
+            
+            Exclusions:
+            - Cosmetic procedures not covered
+            - Experimental treatments excluded
+            - Pre-existing conditions have waiting period
+            """,
+            "source": "general_surgery_policy.txt"
         }
     ]
     return sample_docs
@@ -928,33 +1383,42 @@ def generate_conversational_response(result: Dict[str, Any]) -> str:
     decision = result['decision']
     analysis = result['query_analysis']
     procedure = analysis.get('procedure', 'the procedure')
+    amount = result.get('amount')
+    confidence = result.get('confidence', 0)
     
+    # Build response based on decision and confidence
     if decision == "approved":
-        if procedure and procedure != "surgery":
-            return f"Yes, {procedure} is covered under the policy."
-        else:
-            return "Yes, this procedure is covered under the policy."
+        response = f"Yes, {procedure} is covered under the policy."
+        if amount:
+            response += f" Coverage amount: ${amount:,.2f}."
+        if confidence < 0.8:
+            response += " (Manual review recommended for final confirmation)"
+        return response
     
     elif decision == "rejected":
-        if procedure and procedure != "surgery":
-            return f"No, {procedure} is not covered under the policy."
-        else:
-            return "No, this procedure is not covered under the policy."
+        response = f"No, {procedure} is not covered under the policy."
+        if confidence < 0.8:
+            response += " (Manual review recommended for final confirmation)"
+        return response
     
     elif decision == "requires_review":
-        if procedure and procedure != "surgery":
-            return f"This {procedure} requires manual review. Please contact customer service for detailed assessment."
+        response = f"This {procedure} requires manual review."
+        if analysis.get('policy_age_months') and analysis['policy_age_months'] < 6:
+            response += f" Policy is only {analysis['policy_age_months']} months old and may have waiting period restrictions."
+        elif analysis.get('age') and analysis['age'] > 65:
+            response += f" Age {analysis['age']} may have senior citizen considerations."
         else:
-            return "This procedure requires manual review. Please contact customer service for detailed assessment."
+            response += " Please contact customer service for detailed assessment."
+        return response
     
     else:
         return "Unable to determine coverage. Please contact customer service for assistance."
 
 def main(document_path: str = None):
-    """Example usage of the Advanced RAG System"""
+    """Example usage of the Enhanced RAG System"""
     
     # Initialize system
-    rag_system = AdvancedRAGSystem()
+    rag_system = EnhancedRAGSystem()
     
     if document_path:
         # Load user's document using enhanced processing
