@@ -703,50 +703,19 @@ class AdvancedLLMDecisionEngine:
             logger.warning("Required LLM libraries not available")
             self.llm_available = False
         
-        # Enhanced policy rules and decision logic (fallback)
-        self.policy_rules = {
-            'age_limits': {
-                'knee_surgery': {'min': 18, 'max': 65},
-                'cardiac_surgery': {'min': 18, 'max': 70},
-                'dental_surgery': {'min': 18, 'max': 75},
-                'general_surgery': {'min': 18, 'max': 80}
-            },
-            'waiting_periods': {
-                'knee_surgery': 6,
-                'cardiac_surgery': 12,
-                'dental_surgery': 3,
-                'general_surgery': 6
-            },
-            'coverage_amounts': {
-                'knee_surgery': 50000,
-                'cardiac_surgery': 100000,
-                'dental_surgery': 3000,
-                'general_surgery': 25000
-            }
-        }
+        # LLM-only system - no fallback rules needed
+        pass
         
     def make_decision(self, query: QueryStructured, 
                      relevant_clauses: List[RetrievedClause]) -> DecisionResponse:
-        """Make decision using LLM-based question answering"""
+        """Make decision using ONLY LLM-based question answering"""
         
         # Create enhanced context from relevant clauses
         context = self._create_enhanced_context(relevant_clauses)
         
-        # Always try LLM first, regardless of availability
-        try:
-            if self.llm_available:
-                logger.info("Using LLM-based question answering")
-                decision = self._answer_with_llm(query, context, relevant_clauses)
-            else:
-                logger.warning("LLM not available, using fallback method")
-                # Fallback to rule-based decision
-                reasoning_chain = self._generate_detailed_reasoning_chain(query, context)
-                decision = self._evaluate_decision_enhanced(query, context, reasoning_chain)
-        except Exception as e:
-            logger.error(f"Error in LLM decision making: {e}")
-            # Fallback to rule-based decision
-            reasoning_chain = self._generate_detailed_reasoning_chain(query, context)
-            decision = self._evaluate_decision_enhanced(query, context, reasoning_chain)
+        # Use ONLY LLM for question answering
+        logger.info("Using LLM-based question answering")
+        decision = self._answer_with_llm(query, context, relevant_clauses)
         
         # Add relevant clauses to decision
         decision.relevant_clauses = relevant_clauses[:5]  # Top 5 most relevant clauses
@@ -754,80 +723,37 @@ class AdvancedLLMDecisionEngine:
         return decision
     
     def answer_question_with_llm(self, question: str, context: str) -> str:
-        """Answer a question using powerful LLM with context understanding"""
-        if not self.llm_available:
-            return "LLM not available for question answering."
+        """Answer a question using ONLY LLM QA pipeline"""
+        if not self.llm_available or not self.qa_pipeline:
+            return "LLM QA pipeline not available."
         
         try:
-            # Method 1: Use sophisticated QA pipeline
-            if self.qa_pipeline:
-                result = self.qa_pipeline(
-                    question=question,
-                    context=context,
-                    max_answer_len=300,
-                    handle_impossible_answer=True,
-                    top_k=3  # Get multiple answers
-                )
-                
-                # If we have a good answer from QA pipeline
-                if isinstance(result, dict) and result.get('score', 0) > 0.4:
-                    return result['answer']
-                elif isinstance(result, list) and len(result) > 0:
-                    # Return the best answer from multiple results
-                    best_answer = result[0]
-                    if best_answer.get('score', 0) > 0.4:
-                        return best_answer['answer']
+            logger.info("Using QA pipeline for question answering")
             
-            # Method 2: Use text generation with context
-            if self.tokenizer and self.model:
-                return self._generate_contextual_answer(question, context)
+            # Use ONLY the QA pipeline
+            result = self.qa_pipeline(
+                question=question,
+                context=context,
+                max_answer_len=300,
+                handle_impossible_answer=True,
+                top_k=1  # Get single best answer
+            )
             
-            return "The answer to this question is not clearly stated in the provided policy document."
+            logger.info(f"QA pipeline result: {result}")
+            
+            # Return the answer from QA pipeline
+            if isinstance(result, dict) and 'answer' in result:
+                return result['answer']
+            elif isinstance(result, list) and len(result) > 0:
+                return result[0]['answer']
+            else:
+                return "The answer to this question is not clearly stated in the provided policy document."
                 
         except Exception as e:
             logger.error(f"Error in LLM question answering: {e}")
             return f"Error processing question: {str(e)}"
     
-    def _generate_contextual_answer(self, question: str, context: str) -> str:
-        """Generate contextual answer using text generation model"""
-        try:
-            # Create a prompt that includes context and question
-            prompt = f"""Based on the following insurance policy document, please answer the question accurately and completely.
 
-Policy Document:
-{context[:2000]}  # Limit context length
-
-Question: {question}
-
-Answer:"""
-            
-            # Tokenize the prompt
-            inputs = self.tokenizer.encode(prompt, return_tensors="pt", max_length=512, truncation=True)
-            
-            # Generate answer
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    inputs,
-                    max_length=inputs.shape[1] + 200,  # Generate up to 200 more tokens
-                    num_return_sequences=1,
-                    temperature=0.7,
-                    do_sample=True,
-                    pad_token_id=self.tokenizer.eos_token_id
-                )
-            
-            # Decode the generated text
-            generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
-            # Extract the answer part (after "Answer:")
-            if "Answer:" in generated_text:
-                answer = generated_text.split("Answer:")[-1].strip()
-                return answer if answer else "Unable to generate a specific answer."
-            else:
-                return generated_text.split("Question:")[-1].strip() if "Question:" in generated_text else "Unable to generate a specific answer."
-                
-        except Exception as e:
-            logger.error(f"Error in contextual answer generation: {e}")
-            return "Error generating contextual answer."
     
     def _create_enhanced_context(self, clauses: List[RetrievedClause]) -> str:
         """Create enhanced structured context from retrieved clauses with better organization"""
@@ -1190,7 +1116,7 @@ Answer:"""
         return analysis
     
     def _answer_with_llm(self, query: QueryStructured, context: str, relevant_clauses: List[RetrievedClause]) -> DecisionResponse:
-        """Answer questions using LLM based on retrieved context"""
+        """Answer questions using ONLY LLM based on retrieved context"""
         
         # Convert structured query back to natural language question
         question = query.raw_query if query.raw_query else "What is the coverage for this procedure?"
@@ -1198,31 +1124,16 @@ Answer:"""
         logger.info(f"LLM Question: {question}")
         logger.info(f"LLM Context length: {len(context)} characters")
         
-        # Use LLM to answer the question
+        # Use ONLY LLM to answer the question
         llm_answer = self.answer_question_with_llm(question, context)
         
         logger.info(f"LLM Answer: {llm_answer}")
         
-        # Determine decision based on LLM answer
-        answer_lower = llm_answer.lower()
-        
-        if any(word in answer_lower for word in ['yes', 'covered', 'eligible', 'approved']):
-            decision = "approved"
-            confidence = 0.8
-        elif any(word in answer_lower for word in ['no', 'not covered', 'excluded', 'not eligible']):
-            decision = "rejected"
-            confidence = 0.8
-        else:
-            decision = "requires_review"
-            confidence = 0.6
-        
-        # Extract amount if mentioned
-        amount = self._extract_coverage_amount(context)
-        
+        # Always return the LLM answer as the justification
         return DecisionResponse(
-            decision=decision,
-            amount=amount,
-            confidence=confidence,
+            decision="requires_review",  # Default decision
+            amount=None,
+            confidence=0.8,
             justification=llm_answer,
             relevant_clauses=relevant_clauses,
             reasoning_chain=[f"LLM analysis: {llm_answer}"],
