@@ -500,8 +500,8 @@ class MultiModelEmbeddingRetriever:
         
         logger.info(f"Built keyword index with {len(self.keyword_index)} entries")
     
-    def retrieve_relevant_chunks(self, query: str, top_k: int = 15) -> List[RetrievedClause]:
-        """Retrieve relevant chunks using hybrid search (semantic + keyword)"""
+    def retrieve_relevant_chunks(self, query: str, top_k: int = 20) -> List[RetrievedClause]:
+        """Retrieve relevant chunks using advanced hybrid search with better context understanding"""
         if not self.embedding_models:
             logger.warning("No embedding models available. Returning empty results.")
             return []
@@ -516,10 +516,39 @@ class MultiModelEmbeddingRetriever:
             
         all_results = []
         
-        # Enhanced query processing
-        query_terms = query.lower().split()
-        medical_terms = ['surgery', 'treatment', 'procedure', 'knee', 'dental', 'cardiac', 'heart']
-        query_medical_terms = [term for term in query_terms if term in medical_terms]
+        # Enhanced query processing with domain-specific terms
+        query_lower = query.lower()
+        query_terms = query_lower.split()
+        
+        # Domain-specific term categories for better matching
+        insurance_terms = ['policy', 'insurance', 'coverage', 'claim', 'premium', 'benefit', 'exclusion']
+        medical_terms = ['surgery', 'treatment', 'procedure', 'medical', 'hospital', 'doctor', 'patient']
+        time_terms = ['waiting', 'period', 'grace', 'month', 'year', 'days']
+        amount_terms = ['amount', 'limit', 'maximum', 'coverage', 'sum', 'insured']
+        specific_terms = ['organ', 'donor', 'maternity', 'cataract', 'ncd', 'ayush', 'room', 'rent']
+        
+        # Identify query type for better retrieval
+        query_type = 'general'
+        if any(term in query_lower for term in ['organ', 'donor']):
+            query_type = 'organ_donor'
+        elif any(term in query_lower for term in ['grace', 'period']):
+            query_type = 'grace_period'
+        elif any(term in query_lower for term in ['waiting', 'period']):
+            query_type = 'waiting_period'
+        elif any(term in query_lower for term in ['maternity', 'pregnancy']):
+            query_type = 'maternity'
+        elif any(term in query_lower for term in ['cataract']):
+            query_type = 'cataract'
+        elif any(term in query_lower for term in ['ncd', 'no claim']):
+            query_type = 'ncd'
+        elif any(term in query_lower for term in ['health check', 'preventive']):
+            query_type = 'health_check'
+        elif any(term in query_lower for term in ['hospital', 'definition']):
+            query_type = 'hospital_definition'
+        elif any(term in query_lower for term in ['ayush']):
+            query_type = 'ayush'
+        elif any(term in query_lower for term in ['room rent', 'sub-limit']):
+            query_type = 'room_rent'
         
         # Hybrid search: Combine semantic and keyword search
         for model_name, model in self.embedding_models.items():
@@ -530,10 +559,10 @@ class MultiModelEmbeddingRetriever:
             query_embedding = model.encode([query])
             faiss.normalize_L2(query_embedding)
             
-            # Search
+            # Search with more results for better context
             vector_store = self.vector_stores[model_name]
             scores, indices = vector_store['index'].search(
-                query_embedding.astype(np.float32), top_k * 3  # Get more results for filtering
+                query_embedding.astype(np.float32), top_k * 5  # Get more results for filtering
             )
             
             # Collect results with enhanced scoring
@@ -545,32 +574,67 @@ class MultiModelEmbeddingRetriever:
                     # Calculate semantic similarity
                     semantic_similarity = float(score)
                     
-                    # Calculate keyword boost
+                    # Calculate comprehensive keyword boost
                     keyword_boost = 0.0
                     keyword_matches = []
                     
-                    # Boost for medical term matches
-                    for term in query_medical_terms:
-                        if term in content_lower:
-                            keyword_boost += 0.2  # Higher boost for medical terms
+                    # Boost for exact query term matches
+                    for term in query_terms:
+                        if len(term) > 2 and term in content_lower:
+                            keyword_boost += 0.3
                             keyword_matches.append(term)
                     
-                    # Boost for coverage-related terms
-                    coverage_terms = ['covered', 'eligible', 'approved', 'excluded', 'not covered']
-                    for term in coverage_terms:
+                    # Boost for domain-specific terms
+                    for term in insurance_terms:
                         if term in content_lower:
                             keyword_boost += 0.1
                             keyword_matches.append(term)
                     
-                    # Boost for policy-related terms
-                    policy_terms = ['policy', 'insurance', 'coverage', 'claim']
-                    for term in policy_terms:
+                    for term in medical_terms:
+                        if term in content_lower:
+                            keyword_boost += 0.15
+                            keyword_matches.append(term)
+                    
+                    for term in time_terms:
+                        if term in content_lower:
+                            keyword_boost += 0.1
+                            keyword_matches.append(term)
+                    
+                    for term in amount_terms:
+                        if term in content_lower:
+                            keyword_boost += 0.1
+                            keyword_matches.append(term)
+                    
+                    # High boost for specific terms related to query type
+                    if query_type != 'general':
+                        specific_boost_terms = {
+                            'organ_donor': ['organ', 'donor', 'donation'],
+                            'grace_period': ['grace', 'period', 'premium', 'payment'],
+                            'waiting_period': ['waiting', 'period', 'pre-existing'],
+                            'maternity': ['maternity', 'pregnancy', 'childbirth'],
+                            'cataract': ['cataract'],
+                            'ncd': ['ncd', 'no claim discount'],
+                            'health_check': ['health check', 'preventive'],
+                            'hospital_definition': ['hospital', 'definition', 'bed'],
+                            'ayush': ['ayush', 'ayurveda', 'yoga'],
+                            'room_rent': ['room rent', 'sub-limit', 'icu']
+                        }
+                        
+                        if query_type in specific_boost_terms:
+                            for term in specific_boost_terms[query_type]:
+                                if term in content_lower:
+                                    keyword_boost += 0.4  # High boost for specific terms
+                                    keyword_matches.append(term)
+                    
+                    # Boost for coverage-related terms
+                    coverage_terms = ['covered', 'eligible', 'approved', 'excluded', 'not covered', 'yes', 'no']
+                    for term in coverage_terms:
                         if term in content_lower:
                             keyword_boost += 0.05
                             keyword_matches.append(term)
                     
-                    # Calculate final score
-                    final_score = semantic_similarity + keyword_boost
+                    # Calculate final score with weighted combination
+                    final_score = (semantic_similarity * 0.6) + (keyword_boost * 0.4)
                     
                     clause = RetrievedClause(
                         content=chunk.page_content,
@@ -578,14 +642,14 @@ class MultiModelEmbeddingRetriever:
                         relevance_score=final_score,
                         clause_type=model_name,
                         semantic_similarity=semantic_similarity,
-                        keyword_matches=keyword_matches
+                        keyword_matches=list(set(keyword_matches))  # Remove duplicates
                     )
                     all_results.append(clause)
         
         # Remove duplicates and sort by relevance
         unique_results = {}
         for result in all_results:
-            key = result.content[:300]  # Use first 300 chars as key for better deduplication
+            key = result.content[:400]  # Use first 400 chars as key for better deduplication
             if key not in unique_results or result.relevance_score > unique_results[key].relevance_score:
                 unique_results[key] = result
         
@@ -596,26 +660,35 @@ class MultiModelEmbeddingRetriever:
         return final_results[:top_k]
 
 class AdvancedLLMDecisionEngine:
-    """Advanced decision engine using LLM for question answering"""
+    """Advanced decision engine using powerful LLM for intelligent question answering"""
     
-    def __init__(self, model_name: str = "deepset/roberta-base-squad2"):
+    def __init__(self, model_name: str = "microsoft/DialoGPT-large"):
         self.model_name = model_name
-        self.qa_pipeline = None
         self.llm_available = False
+        self.tokenizer = None
+        self.model = None
+        self.qa_pipeline = None
         
-        # Initialize LLM question answering pipeline
-        if pipeline is not None:
+        # Initialize multiple LLM components for different tasks
+        if AutoTokenizer is not None and AutoModel is not None:
             try:
-                logger.info(f"Loading LLM QA model: {model_name}")
+                logger.info(f"Loading powerful LLM model: {model_name}")
+                
+                # Load tokenizer and model for text generation
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+                self.model = AutoModel.from_pretrained(model_name)
+                
+                # Load a more sophisticated QA model
                 self.qa_pipeline = pipeline(
                     "question-answering",
-                    model=model_name,
-                    tokenizer=model_name
+                    model="deepset/roberta-large-squad2",  # More powerful QA model
+                    tokenizer="deepset/roberta-large-squad2"
                 )
+                
                 self.llm_available = True
-                logger.info("LLM QA model loaded successfully")
+                logger.info("Powerful LLM models loaded successfully")
             except Exception as e:
-                logger.warning(f"Failed to load LLM QA model: {e}")
+                logger.warning(f"Failed to load LLM models: {e}")
                 self.llm_available = False
         
         # Enhanced policy rules and decision logic (fallback)
@@ -663,54 +736,145 @@ class AdvancedLLMDecisionEngine:
         return decision
     
     def answer_question_with_llm(self, question: str, context: str) -> str:
-        """Answer a question using LLM based on the provided context"""
-        if not self.llm_available or not self.qa_pipeline:
+        """Answer a question using powerful LLM with context understanding"""
+        if not self.llm_available:
             return "LLM not available for question answering."
         
         try:
-            # Use the QA pipeline to answer the question
-            result = self.qa_pipeline(
-                question=question,
-                context=context,
-                max_answer_len=200,
-                handle_impossible_answer=True
-            )
+            # Method 1: Use sophisticated QA pipeline
+            if self.qa_pipeline:
+                result = self.qa_pipeline(
+                    question=question,
+                    context=context,
+                    max_answer_len=300,
+                    handle_impossible_answer=True,
+                    top_k=3  # Get multiple answers
+                )
+                
+                # If we have a good answer from QA pipeline
+                if isinstance(result, dict) and result.get('score', 0) > 0.4:
+                    return result['answer']
+                elif isinstance(result, list) and len(result) > 0:
+                    # Return the best answer from multiple results
+                    best_answer = result[0]
+                    if best_answer.get('score', 0) > 0.4:
+                        return best_answer['answer']
             
-            if result['score'] > 0.3:  # Confidence threshold
-                return result['answer']
-            else:
-                return "The answer to this question is not clearly stated in the provided policy document."
+            # Method 2: Use text generation with context
+            if self.tokenizer and self.model:
+                return self._generate_contextual_answer(question, context)
+            
+            return "The answer to this question is not clearly stated in the provided policy document."
                 
         except Exception as e:
             logger.error(f"Error in LLM question answering: {e}")
             return f"Error processing question: {str(e)}"
     
+    def _generate_contextual_answer(self, question: str, context: str) -> str:
+        """Generate contextual answer using text generation model"""
+        try:
+            # Create a prompt that includes context and question
+            prompt = f"""Based on the following insurance policy document, please answer the question accurately and completely.
+
+Policy Document:
+{context[:2000]}  # Limit context length
+
+Question: {question}
+
+Answer:"""
+            
+            # Tokenize the prompt
+            inputs = self.tokenizer.encode(prompt, return_tensors="pt", max_length=512, truncation=True)
+            
+            # Generate answer
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    inputs,
+                    max_length=inputs.shape[1] + 200,  # Generate up to 200 more tokens
+                    num_return_sequences=1,
+                    temperature=0.7,
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.eos_token_id
+                )
+            
+            # Decode the generated text
+            generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            # Extract the answer part (after "Answer:")
+            if "Answer:" in generated_text:
+                answer = generated_text.split("Answer:")[-1].strip()
+                return answer if answer else "Unable to generate a specific answer."
+            else:
+                return generated_text.split("Question:")[-1].strip() if "Question:" in generated_text else "Unable to generate a specific answer."
+                
+        except Exception as e:
+            logger.error(f"Error in contextual answer generation: {e}")
+            return "Error generating contextual answer."
+    
     def _create_enhanced_context(self, clauses: List[RetrievedClause]) -> str:
-        """Create enhanced structured context from retrieved clauses"""
+        """Create enhanced structured context from retrieved clauses with better organization"""
+        if not clauses:
+            return "No relevant information found in the policy document."
+        
+        # Sort clauses by relevance score
+        sorted_clauses = sorted(clauses, key=lambda x: x.relevance_score, reverse=True)
+        
+        # Create a comprehensive context
         context_parts = []
+        context_parts.append("POLICY DOCUMENT CONTEXT:")
+        context_parts.append("=" * 50)
         
-        # Group clauses by relevance score
-        high_relevance = [c for c in clauses if c.relevance_score > 0.7]
-        medium_relevance = [c for c in clauses if 0.4 <= c.relevance_score <= 0.7]
-        low_relevance = [c for c in clauses if c.relevance_score < 0.4]
-        
-        # Add high relevance clauses first
-        for i, clause in enumerate(high_relevance[:3]):
-            context_parts.append(f"HIGH RELEVANCE CLAUSE {i+1} (Score: {clause.relevance_score:.3f}):")
-            context_parts.append(clause.content)
+        # Add the most relevant clauses (up to 5)
+        for i, clause in enumerate(sorted_clauses[:5]):
+            context_parts.append(f"\nRELEVANT SECTION {i+1} (Relevance: {clause.relevance_score:.3f}):")
+            context_parts.append("-" * 30)
+            
+            # Clean and format the content
+            content = clause.content.strip()
+            if len(content) > 500:
+                # Truncate very long content but keep important parts
+                content = content[:500] + "..."
+            
+            context_parts.append(content)
+            
+            # Add keyword information if available
             if clause.keyword_matches:
-                context_parts.append(f"Keywords: {', '.join(clause.keyword_matches)}")
+                context_parts.append(f"\nKey Terms: {', '.join(clause.keyword_matches)}")
+            
             context_parts.append(f"Source: {clause.source_document}")
-            context_parts.append("---")
         
-        # Add medium relevance clauses
-        for i, clause in enumerate(medium_relevance[:2]):
-            context_parts.append(f"MEDIUM RELEVANCE CLAUSE {i+1} (Score: {clause.relevance_score:.3f}):")
-            context_parts.append(clause.content)
-            if clause.keyword_matches:
-                context_parts.append(f"Keywords: {', '.join(clause.keyword_matches)}")
-            context_parts.append(f"Source: {clause.source_document}")
-            context_parts.append("---")
+        # Add summary of all relevant information
+        context_parts.append("\n" + "=" * 50)
+        context_parts.append("SUMMARY:")
+        
+        # Extract key information from all clauses
+        all_content = " ".join([c.content for c in sorted_clauses[:3]])
+        
+        # Look for specific patterns in the content
+        patterns = {
+            'grace_period': r'grace\s+period.*?(\d+)\s*(?:days?|months?)',
+            'waiting_period': r'waiting\s+period.*?(\d+)\s*(?:months?|years?)',
+            'coverage_amount': r'(?:coverage|amount|up\s+to).*?(\d+(?:,\d+)*(?:\.\d+)?)',
+            'organ_donor': r'organ\s+(?:donor|donation)',
+            'maternity': r'maternity|pregnancy|childbirth',
+            'cataract': r'cataract',
+            'ncd': r'ncd|no\s+claim\s+discount',
+            'health_check': r'health\s+check|preventive',
+            'hospital': r'hospital.*?(?:definition|defined)',
+            'ayush': r'ayush|ayurveda|yoga|naturopathy',
+            'room_rent': r'room\s+rent|sub.?limit'
+        }
+        
+        found_info = []
+        for pattern_name, pattern in patterns.items():
+            matches = re.findall(pattern, all_content, re.IGNORECASE)
+            if matches:
+                found_info.append(f"{pattern_name.replace('_', ' ').title()}: {', '.join(matches)}")
+        
+        if found_info:
+            context_parts.append("Key Information Found:")
+            for info in found_info:
+                context_parts.append(f"• {info}")
         
         return "\n".join(context_parts)
     
