@@ -1,9 +1,9 @@
 # Core ML and NLP libraries
-torch>=1.9.0
-transformers>=4.20.0
+# torch>=1.9.0
+# transformers>=4.20.0  # No longer required for QA (Ollama used)
 sentence-transformers>=2.2.0
 spacy>=3.4.0
-accelerate>=0.20.0
+# accelerate>=0.20.0  # No longer required for QA (Ollama used)
 datasets>=2.0.0
 
 # Vector search and similarity
@@ -27,9 +27,11 @@ fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 pydantic>=2.0.0
 
-# HTTP requests
+# HTTP requests (required for Ollama API)
 requests>=2.31.0
 
 # Additional utilities
 python-dateutil>=2.8.0
-python-multipart>=0.0.6 
+python-multipart>=0.0.6
+
+# Ollama must be installed and running with gemma:1b model (see README) 

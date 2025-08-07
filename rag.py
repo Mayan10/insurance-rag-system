@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import pickle
 import logging
 from pathlib import Path
+import requests
 
 # External libraries (install via pip)
 # Initialize variables to None to avoid NameError
@@ -50,6 +51,23 @@ except ImportError as e:
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def ask_gemma_ollama(question, context, model="gemma:1b"):
+    """Call Ollama's Gemma 3 1B model with a question and context."""
+    prompt = f"Context:\n{context}\n\nQuestion: {question}\nAnswer:"
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=120
+        )
+        response.raise_for_status()
+        raw = response.json()["response"].strip()
+        print(f"[DEBUG] Gemma LLM raw response: {raw}")
+        return raw
+    except Exception as e:
+        print(f"[DEBUG] Error communicating with Gemma 3 1B via Ollama: {e}")
+        return f"Error communicating with Gemma 3 1B via Ollama: {e}"
 
 @dataclass
 class QueryStructured:
@@ -280,9 +298,9 @@ class MultiModelEmbeddingRetriever:
         if SentenceTransformer is not None:
             for model_name in embedding_models:
                 try:
-                    # Use device='cpu' to avoid GPU memory issues
-                    self.embedding_models[model_name] = SentenceTransformer(model_name, device='cpu')
-                    logger.info(f"Loaded embedding model: {model_name}")
+                    # Use device='mps' for Apple Silicon GPU acceleration
+                    self.embedding_models[model_name] = SentenceTransformer(model_name, device='mps')
+                    logger.info(f"Loaded embedding model: {model_name} (device=mps)")
                 except Exception as e:
                     logger.warning(f"Failed to load {model_name}: {e}")
         else:
@@ -660,100 +678,32 @@ class MultiModelEmbeddingRetriever:
         return final_results[:top_k]
 
 class AdvancedLLMDecisionEngine:
-    """Advanced decision engine using powerful LLM for intelligent question answering"""
-    
-    def __init__(self, model_name: str = "microsoft/DialoGPT-large"):
-        self.model_name = model_name
-        self.llm_available = False
-        self.tokenizer = None
-        self.model = None
-        self.qa_pipeline = None
-        
-        # Initialize multiple LLM components for different tasks
-        if AutoTokenizer is not None and AutoModel is not None and pipeline is not None:
-            try:
-                logger.info(f"Loading powerful LLM model: {model_name}")
-                
-                # Load tokenizer and model for text generation
-                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-                self.model = AutoModel.from_pretrained(model_name)
-                
-                # Load a more sophisticated QA model
-                logger.info("Loading QA pipeline...")
-                self.qa_pipeline = pipeline(
-                    "question-answering",
-                    model="deepset/roberta-large-squad2",  # More powerful QA model
-                    tokenizer="deepset/roberta-large-squad2"
-                )
-                
-                self.llm_available = True
-                logger.info("Powerful LLM models loaded successfully")
-                
-                # Test the LLM with a simple question
-                try:
-                    test_answer = self.answer_question_with_llm("What is a grace period?", "A grace period is a time period after the due date during which payment can be made.")
-                    logger.info(f"LLM test successful: {test_answer[:50]}...")
-                except Exception as e:
-                    logger.warning(f"LLM test failed: {e}")
-                    self.llm_available = False
-            except Exception as e:
-                logger.warning(f"Failed to load LLM models: {e}")
-                self.llm_available = False
-        else:
-            logger.warning("Required LLM libraries not available")
-            self.llm_available = False
-        
-        # LLM-only system - no fallback rules needed
-        pass
-        
-    def make_decision(self, query: QueryStructured, 
-                     relevant_clauses: List[RetrievedClause]) -> DecisionResponse:
-        """Make decision using ONLY LLM-based question answering"""
-        
-        # Create enhanced context from relevant clauses
-        context = self._create_enhanced_context(relevant_clauses)
-        
-        # Use ONLY LLM for question answering
-        logger.info("Using LLM-based question answering")
-        decision = self._answer_with_llm(query, context, relevant_clauses)
-        
-        # Add relevant clauses to decision
-        decision.relevant_clauses = relevant_clauses[:5]  # Top 5 most relevant clauses
-        
-        return decision
-    
-    def answer_question_with_llm(self, question: str, context: str) -> str:
-        """Answer a question using ONLY LLM QA pipeline"""
-        if not self.llm_available or not self.qa_pipeline:
-            return "LLM QA pipeline not available."
-        
-        try:
-            logger.info("Using QA pipeline for question answering")
-            
-            # Use ONLY the QA pipeline
-            result = self.qa_pipeline(
-                question=question,
-                context=context,
-                max_answer_len=300,
-                handle_impossible_answer=True,
-                top_k=1  # Get single best answer
-            )
-            
-            logger.info(f"QA pipeline result: {result}")
-            
-            # Return the answer from QA pipeline
-            if isinstance(result, dict) and 'answer' in result:
-                return result['answer']
-            elif isinstance(result, list) and len(result) > 0:
-                return result[0]['answer']
-            else:
-                return "The answer to this question is not clearly stated in the provided policy document."
-                
-        except Exception as e:
-            logger.error(f"Error in LLM question answering: {e}")
-            return f"Error processing question: {str(e)}"
-    
+    """Decision engine using Gemma 3 1B via Ollama for question answering"""
 
+    def __init__(self, model_name: str = "gemma:1b"):
+        self.model_name = model_name
+
+    def make_decision(self, query: QueryStructured, relevant_clauses: List[RetrievedClause]) -> DecisionResponse:
+        context = self._create_enhanced_context(relevant_clauses)
+        decision = self._answer_with_llm(query, context, relevant_clauses)
+        decision.relevant_clauses = relevant_clauses[:5]
+        return decision
+
+    def answer_question_with_llm(self, question: str, context: str) -> str:
+        return ask_gemma_ollama(question, context, model=self.model_name)
+
+    def _answer_with_llm(self, query: QueryStructured, context: str, relevant_clauses: List[RetrievedClause]) -> DecisionResponse:
+        question = query.raw_query if query.raw_query else "What is the coverage for this procedure?"
+        llm_answer = self.answer_question_with_llm(question, context)
+        return DecisionResponse(
+            decision="requires_review",
+            amount=None,
+            confidence=0.8,
+            justification=llm_answer,
+            relevant_clauses=relevant_clauses,
+            reasoning_chain=[f"LLM analysis: {llm_answer}"],
+            coverage_details={"llm_answer": llm_answer}
+        )
     
     def _create_enhanced_context(self, clauses: List[RetrievedClause]) -> str:
         """Create enhanced structured context from retrieved clauses with better organization"""
@@ -1114,31 +1064,6 @@ class AdvancedLLMDecisionEngine:
                 pass
         
         return analysis
-    
-    def _answer_with_llm(self, query: QueryStructured, context: str, relevant_clauses: List[RetrievedClause]) -> DecisionResponse:
-        """Answer questions using ONLY LLM based on retrieved context"""
-        
-        # Convert structured query back to natural language question
-        question = query.raw_query if query.raw_query else "What is the coverage for this procedure?"
-        
-        logger.info(f"LLM Question: {question}")
-        logger.info(f"LLM Context length: {len(context)} characters")
-        
-        # Use ONLY LLM to answer the question
-        llm_answer = self.answer_question_with_llm(question, context)
-        
-        logger.info(f"LLM Answer: {llm_answer}")
-        
-        # Always return the LLM answer as the justification
-        return DecisionResponse(
-            decision="requires_review",  # Default decision
-            amount=None,
-            confidence=0.8,
-            justification=llm_answer,
-            relevant_clauses=relevant_clauses,
-            reasoning_chain=[f"LLM analysis: {llm_answer}"],
-            coverage_details={"llm_answer": llm_answer}
-        )
     
     def _extract_coverage_amount(self, context: str) -> Optional[float]:
         """Extract coverage amount from context with enhanced patterns"""
@@ -1612,6 +1537,7 @@ def generate_conversational_response(result: Dict[str, Any]) -> str:
     procedure = analysis.get('procedure', 'the procedure')
     amount = result.get('amount')
     confidence = result.get('confidence', 0)
+    justification = result.get('justification', '')
     
     # Build response based on decision and confidence
     if decision == "approved":
@@ -1629,14 +1555,18 @@ def generate_conversational_response(result: Dict[str, Any]) -> str:
         return response
     
     elif decision == "requires_review":
-        response = f"This {procedure} requires manual review."
-        if analysis.get('policy_age_months') and analysis['policy_age_months'] < 6:
-            response += f" Policy is only {analysis['policy_age_months']} months old and may have waiting period restrictions."
-        elif analysis.get('age') and analysis['age'] > 65:
-            response += f" Age {analysis['age']} may have senior citizen considerations."
+        # Show the LLM answer (justification) directly
+        if justification:
+            return justification
         else:
-            response += " Please contact customer service for detailed assessment."
-        return response
+            response = f"This {procedure} requires manual review."
+            if analysis.get('policy_age_months') and analysis['policy_age_months'] < 6:
+                response += f" Policy is only {analysis['policy_age_months']} months old and may have waiting period restrictions."
+            elif analysis.get('age') and analysis['age'] > 65:
+                response += f" Age {analysis['age']} may have senior citizen considerations."
+            else:
+                response += " Please contact customer service for detailed assessment."
+            return response
     
     else:
         return "Unable to determine coverage. Please contact customer service for assistance."

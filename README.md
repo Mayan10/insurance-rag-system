@@ -226,3 +226,38 @@ Supported cities: Pune, Mumbai, Delhi, Bangalore, Chennai, Hyderabad, Kolkata, A
 3. **Batch Processing**: Process multiple queries efficiently
 4. **Audit Trail**: Track decision history and reasoning
 5. **API Interface**: REST API for integration with other systems 
+
+## ⚡️ Ollama & Gemma 3 1B Setup (for LLM QA)
+
+This project now uses the Gemma 3 1B model via Ollama for all LLM-based question answering.
+
+### 1. Install Ollama
+- Download and install Ollama for Mac from: https://ollama.com/download
+- Open Ollama once to start the background service.
+
+### 2. Pull the Gemma 3 1B Model
+Open Terminal and run:
+```bash
+ollama pull gemma:1b
+```
+
+### 3. (Optional) Start the Model Manually
+Ollama will auto-start the model when needed, but you can run:
+```bash
+ollama run gemma:1b
+```
+
+### 4. Ensure Ollama is Running
+The API should be available at http://localhost:11434
+
+### 5. Python Requirements
+- Ensure `requests` is installed (included in requirements.txt)
+
+---
+
+## LLM Question Answering
+- All question answering is now performed by sending the context and question to Gemma 3 1B via Ollama's local API.
+- No HuggingFace QA pipeline is used for answering questions.
+- PDF extraction, chunking, and retrieval remain unchanged.
+
+--- 
